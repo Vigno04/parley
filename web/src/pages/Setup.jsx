@@ -1,36 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { useGuild } from '../GuildContext.jsx';
 import { useSystem } from '../SystemContext.jsx';
 import { Page, PageHead } from '../components/Page.jsx';
 import { Icon, Empty } from '../components/ui.jsx';
-import { ModelPicker } from '../components/ModelPicker.jsx';
 import { ConnectionForm, BotStatusBadge } from '../components/Connection.jsx';
-
-const LANGS = [['auto', 'Auto-detect'], ['en', 'English'], ['de', 'German'], ['es', 'Spanish'], ['fr', 'French'],
-  ['it', 'Italian'], ['pt', 'Portuguese'], ['nl', 'Dutch'], ['ru', 'Russian'], ['ja', 'Japanese'], ['zh', 'Chinese']];
-const SUMMARY_LANGS = [['match', 'Match transcription'], ...LANGS.filter(([c]) => c !== 'auto')];
 
 const PROVIDER_KINDS = [
   { id: 'openai-compatible', label: 'OpenAI-compatible', defaultUrl: 'https://api.openai.com/v1', hint: 'Groq, DeepSeek, Together, OpenRouter, vLLM, OpenAI, etc.' },
   { id: 'gemini', label: 'Google Gemini', defaultUrl: '', hint: 'Uses Google AI Studio SDK' },
   { id: 'ollama', label: 'Ollama', defaultUrl: 'http://localhost:11434', hint: 'Local or network Ollama instance' },
 ];
-
-function useCatalog(provider) {
-  const [state, setState] = useState({ catalog: null, loading: !!provider });
-  const seq = useRef(0);
-  const load = useCallback((refresh) => {
-    const mine = ++seq.current;
-    if (!provider) { setState({ catalog: null, loading: false }); return; }
-    setState((s) => ({ ...s, loading: true }));
-    api.providerModels(provider, refresh)
-      .then((catalog) => { if (seq.current === mine) setState({ catalog, loading: false }); })
-      .catch(() => { if (seq.current === mine) setState({ catalog: null, loading: false }); });
-  }, [provider]);
-  useEffect(() => { load(false); }, [load]);
-  return { catalog: state.catalog, loading: state.loading, reload: () => load(true) };
-}
 
 function Field({ label, hint, children }) {
   return (
@@ -509,9 +489,6 @@ export default function Setup() {
 
   useEffect(() => { reload(); }, [reload]);
 
-  const models = useCatalog(data?.config?.summarizerProvider);
-  const fbModels = useCatalog(data?.config?.summarizerFallbackProvider);
-
   if (!guildId) return (
     <Page max="720px">
       <PageHead title="Settings" subtitle="Discord connection and per-server configuration." />
@@ -519,7 +496,7 @@ export default function Setup() {
         <ConnectionCard sys={sys} onChanged={refreshSys} />
         <ProvidersCard providers={providerList} onReload={reload} />
         <div className="mt-5">
-          <Empty icon={Icon.Settings} title="No server selected" body="Pick a server from the top bar to configure summarizer, transcription, and delivery." />
+          <Empty icon={Icon.Settings} title="No server selected" body="Pick a server from the top bar to configure server behavior." />
         </div>
       </div>
     </Page>
@@ -532,14 +509,13 @@ export default function Setup() {
     </Page>
   );
 
-  const { config: c, providers = [], sttProviders = [], channels = [] } = data;
+  const { config: c } = data;
 
   const save = async (patch) => {
     try {
       const r = await api.saveConfig(guildId, patch);
       setData((d) => ({ ...d, config: r.config }));
       setMsg('Saved'); setMsgErr(false);
-      if (patch.sttProvider !== undefined) refreshSys?.();
       return true;
     } catch (e) {
       setMsg(e.message); setMsgErr(true); return false;
@@ -547,8 +523,6 @@ export default function Setup() {
       setTimeout(() => setMsg(''), 2400);
     }
   };
-
-  const sel = 'input appearance-none pr-9 cursor-pointer';
 
   return (
     <Page max="720px">
@@ -563,110 +537,9 @@ export default function Setup() {
 
         <ProvidersCard providers={providerList} onReload={reload} />
 
-        <Card title="Summarizer" desc="Which AI turns transcripts into structured notes.">
-          <Field label="Provider" hint={providers.length === 0 ? 'No providers configured yet. Add one in the AI Providers section above.' : undefined}>
-            <div className="relative">
-              <select
-                className={sel}
-                value={c.summarizerProvider || ''}
-                onChange={(e) => {
-                  const newP = e.target.value;
-                  const pObj = providerList.find((p) => p.id === newP);
-                  let defModel = '';
-                  if (pObj?.models) {
-                    try {
-                      const m = Array.isArray(pObj.models) ? pObj.models : JSON.parse(pObj.models);
-                      if (m && m[0]) defModel = m[0];
-                    } catch {
-                      const parts = String(pObj.models).split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
-                      if (parts[0]) defModel = parts[0];
-                    }
-                  }
-                  save({ provider: newP, model: defModel });
-                }}
-              >
-                {providers.length === 0 && <option value="">No providers configured</option>}
-                {providers.map((p) => (
-                  <option key={p.provider} value={p.provider}>
-                    {p.provider}{p.ok ? '' : ' (no key set)'}
-                  </option>
-                ))}
-              </select>
-              <Chevron />
-            </div>
-          </Field>
-
-          {c.summarizerProvider && (
-            <Field label="Model" hint="Type to search the provider's catalog. Any model id it supports works — press Enter to use what you typed.">
-              <ModelPicker
-                value={c.summarizerModel}
-                catalog={models.catalog}
-                loading={models.loading}
-                onRefresh={models.reload}
-                onPick={(id) => save({ provider: c.summarizerProvider, model: id })}
-              />
-            </Field>
-          )}
-
-          <Field label="Fallback" hint="Tried only if the primary fails (quota cap, outage, region block). Choose none to disable.">
-            <div className="relative">
-              <select
-                className={sel}
-                value={c.summarizerFallbackProvider || 'none'}
-                onChange={(e) => save({ fallbackProvider: e.target.value, fallbackModel: '' })}
-              >
-                <option value="none">none</option>
-                {providers
-                  .filter((p) => p.ok && p.provider !== c.summarizerProvider)
-                  .map((p) => (
-                    <option key={p.provider} value={p.provider}>{p.provider}</option>
-                  ))}
-              </select>
-              <Chevron />
-            </div>
-            {c.summarizerFallbackProvider && c.summarizerFallbackProvider !== 'none' && (
-              <div className="mt-2">
-                <ModelPicker
-                  value={c.summarizerFallbackModel}
-                  catalog={fbModels.catalog}
-                  loading={fbModels.loading}
-                  onRefresh={fbModels.reload}
-                  onPick={(id) => save({ fallbackModel: id })}
-                />
-              </div>
-            )}
-          </Field>
-        </Card>
-
-        <Card title="Delivery" desc="Where and how notes are posted in Discord.">
-          <Field label="Notes channel">
-            <div className="relative">
-              <select className={sel} value={c.notesChannelId || ''} onChange={(e) => save({ notesChannelId: e.target.value || null })}>
-                <option value="">(meeting's own channel)</option>
-                {channels.map((ch) => <option key={ch.id} value={ch.id}>#{ch.name}</option>)}
-              </select>
-              <Chevron />
-            </div>
-          </Field>
-          <Field label="Summary language">
-            <div className="relative">
-              <select className={sel} value={c.summaryLanguage} onChange={(e) => save({ summary_language: e.target.value })}>
-                {SUMMARY_LANGS.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
-              </select>
-              <Chevron />
-            </div>
-          </Field>
-          <Switch
-            checked={c.useThread}
-            onChange={(e) => save({ useThread: e.target.checked })}
-            label="Post notes in a thread"
-            desc="Keeps the channel tidy by threading each meeting's notes."
-          />
-        </Card>
-
         <Card title="Behavior">
           <Switch
-            checked={c.autoJoin}
+            checked={c?.autoJoin}
             onChange={(e) => save({ autoJoin: e.target.checked })}
             label="Auto-join voice"
             desc="Join automatically when two or more people are in a voice channel."
