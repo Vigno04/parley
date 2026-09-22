@@ -423,6 +423,47 @@ test('POST /api/providers/detect-models returns live models or empty', async () 
   } finally { close(); }
 });
 
+test('POST /api/providers/detect-models uses saved provider api_key when not passed in body', async () => {
+  const db = openDb(':memory:');
+  db.upsertProvider({
+    id: 'my-custom',
+    name: 'Custom',
+    kind: 'openai-compatible',
+    caps: 'summarizer',
+    baseUrl: 'http://127.0.0.1:12345/v1',
+    apiKey: 'my-secret-key',
+  });
+
+  let authHeader = null;
+  const mockApp = express();
+  mockApp.get('/v1/models', (req, res) => {
+    authHeader = req.headers['authorization'];
+    res.json({ data: [{ id: 'detected-model-1' }] });
+  });
+  const mockServer = await listen(mockApp);
+
+  const { base, close } = await listen(appWith(db));
+  try {
+    const res = await fetch(`${base}/api/providers/detect-models`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'my-custom',
+        baseUrl: `${mockServer.base}/v1`,
+        // apiKey omitted
+      }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.deepEqual(body.models, ['detected-model-1']);
+    assert.equal(authHeader, 'Bearer my-secret-key');
+  } finally {
+    close();
+    mockServer.close();
+  }
+});
+
 
 // ── Meeting export (#17) ──────────────────────────────────────────────────────
 

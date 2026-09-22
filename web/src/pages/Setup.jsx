@@ -93,6 +93,7 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
     setDetectMsg(null);
     try {
       const res = await api.detectModels({
+        id: (initial?.id || id || '').trim() || undefined,
         kind,
         baseUrl: baseUrl.trim() || undefined,
         apiKey: apiKey.trim() || undefined,

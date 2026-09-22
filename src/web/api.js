@@ -338,14 +338,22 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
 
   // Test connectivity & detect models from endpoint before saving.
   r.post('/providers/detect-models', requireAdmin, async (req, res) => {
-    const { kind, baseUrl, apiKey } = req.body || {};
+    const { id, kind, baseUrl, apiKey } = req.body || {};
+    const existing = id ? db.getProvider(id) : null;
+    const existingKey = existing?.api_key || (id ? env[id]?.apiKey : null) || null;
+    const keyToUse = (apiKey && apiKey.trim()) ? apiKey.trim() : (existingKey || null);
+    const urlToUse = (baseUrl !== undefined && baseUrl !== '')
+      ? baseUrl.trim()
+      : (existing?.base_url || (id ? (env[id]?.baseUrl || env[id]?.url) : '') || '');
+    const kindToUse = kind || existing?.kind || 'openai-compatible';
+
     const dummy = {
-      id: 'tmp-detect',
-      kind: kind || 'openai-compatible',
-      base_url: baseUrl || '',
-      api_key: apiKey || null,
+      id: id || 'tmp-detect',
+      kind: kindToUse,
+      base_url: urlToUse,
+      api_key: keyToUse,
     };
-    const result = await listModels(dummy, { timeoutMs: 6000, refresh: true });
+    const result = await listModels(dummy, { timeoutMs: 8000, refresh: true });
     res.json({
       ok: result.source === 'live',
       models: result.models.map((m) => m.id),
