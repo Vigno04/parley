@@ -76,8 +76,14 @@ function providerRowForOption(optionName, picked = {}, cfg = {}, db = null) {
 export async function modelChoices(provider, query = '', opts = {}) {
   if (!provider) return [];
   const { models } = await listModels(provider, { timeoutMs: 2000, ...opts });
-  return searchModels(models, query, MAX_CHOICES)
+  const choices = searchModels(models, query, MAX_CHOICES)
     .map((m) => ({ name: modelChoiceName(m), value: m.id.slice(0, MAX_NAME) }));
+
+  const q = String(query || '').trim();
+  if (q && choices.length === 0) {
+    choices.push({ name: `Use: ${q}`.slice(0, MAX_NAME), value: q.slice(0, MAX_NAME) });
+  }
+  return choices.slice(0, MAX_CHOICES);
 }
 
 /**

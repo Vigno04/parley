@@ -97,24 +97,46 @@ async function fetchGemini({ apiKey, fetchImpl, timeoutMs }) {
 // Shared shape for the OpenAI-compatible `/models` listings.
 async function fetchOpenAICompatible({ baseUrl, apiKey, fetchImpl, timeoutMs, isOpenAI = false }) {
   if (!baseUrl) throw new Error('Base URL is not set');
-  const data = await getJson(`${baseUrl.replace(/\/$/, '')}/models`, {
-    headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
-    timeoutMs,
-    fetchImpl,
-  });
-  const rawList = data?.data || [];
+  const cleanBase = baseUrl.replace(/\/$/, '');
+  const headers = apiKey ? { authorization: `Bearer ${apiKey}` } : {};
+
+  let data;
+  try {
+    data = await getJson(`${cleanBase}/models`, { headers, timeoutMs, fetchImpl });
+  } catch (err) {
+    if (err.message && err.message.includes('404')) {
+      const altUrl = cleanBase.endsWith('/v1')
+        ? `${cleanBase.slice(0, -3)}/models`
+        : `${cleanBase}/v1/models`;
+      try {
+        data = await getJson(altUrl, { headers, timeoutMs, fetchImpl });
+      } catch {
+        throw err;
+      }
+    } else {
+      throw err;
+    }
+  }
+
+  const rawList = Array.isArray(data)
+    ? data
+    : (Array.isArray(data?.data) ? data.data : (Array.isArray(data?.models) ? data.models : []));
+
   const models = [];
   for (const m of rawList) {
-    if (!m?.id) continue;
+    const id = m?.id || m?.name || (typeof m === 'string' ? m : null);
+    if (!id) continue;
     const out = m.architecture?.output_modalities;
     if (Array.isArray(out) && out.length && !out.includes('text')) continue;
-    if (isOpenAI && (!OPENAI_TEXT.test(m.id) || OPENAI_NON_TEXT.test(m.id))) continue;
-    models.push(entry(m.id, m.name, m.context_length));
+    if (isOpenAI && cleanBase.includes('api.openai.com') && (!OPENAI_TEXT.test(id) || OPENAI_NON_TEXT.test(id))) continue;
+    models.push(entry(id, m.name || id, m.context_length));
   }
+
   // Fallback for OpenAI compatible gateways with custom model names
   if (isOpenAI && models.length === 0) {
     for (const m of rawList) {
-      if (m?.id) models.push(entry(m.id, m.name, m.context_length));
+      const id = m?.id || m?.name || (typeof m === 'string' ? m : null);
+      if (id) models.push(entry(id, m.name || id, m.context_length));
     }
   }
   return models;
@@ -122,9 +144,26 @@ async function fetchOpenAICompatible({ baseUrl, apiKey, fetchImpl, timeoutMs, is
 
 async function fetchOllama({ baseUrl, fetchImpl, timeoutMs }) {
   if (!baseUrl) throw new Error('OLLAMA_URL is not set');
-  const data = await getJson(`${baseUrl.replace(/\/$/, '')}/api/tags`, { timeoutMs, fetchImpl });
-  return (data?.models || [])
-    .map((m) => m?.name)
+  const cleanBase = baseUrl.replace(/\/$/, '');
+  const hostBase = cleanBase.endsWith('/v1') ? cleanBase.slice(0, -3) : cleanBase;
+
+  let data;
+  try {
+    data = await getJson(`${hostBase}/api/tags`, { timeoutMs, fetchImpl });
+  } catch (err) {
+    try {
+      data = await getJson(`${hostBase}/v1/models`, { timeoutMs, fetchImpl });
+    } catch {
+      throw err;
+    }
+  }
+
+  const list = Array.isArray(data?.models)
+    ? data.models
+    : (Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []));
+
+  return list
+    .map((m) => m?.name || m?.id || (typeof m === 'string' ? m : null))
     .filter((name) => typeof name === 'string' && name)
     .map((name) => entry(name));
 }
@@ -205,8 +244,27 @@ export async function listModels(provider, {
 
   if (!providerId) return { provider: null, models: [], source: 'curated', error: 'Provider not found', fetchedAt: now() };
 
-  const curated = CURATED_MODELS[providerId] || [];
-  const base = { provider: providerId, curated, default: DEFAULT_MODELS[providerId] || null };
+  let configuredModels = [];
+  if (provider && typeof provider === 'object' && provider.models) {
+    if (Array.isArray(provider.models)) {
+      configuredModels = provider.models.filter(Boolean);
+    } else if (typeof provider.models === 'string') {
+      try {
+        const parsed = JSON.parse(provider.models);
+        if (Array.isArray(parsed)) configuredModels = parsed.filter(Boolean);
+        else if (provider.models.trim()) configuredModels = [provider.models.trim()];
+      } catch {
+        configuredModels = provider.models.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
+      }
+    }
+  }
+
+  // Only use hardcoded CURATED_MODELS for default standard providers without custom endpoints
+  const isCustom = (provider && typeof provider === 'object' && !!provider.base_url) || !CURATED_MODELS[providerId];
+  const curated = configuredModels.length > 0
+    ? configuredModels
+    : (isCustom ? [] : (CURATED_MODELS[providerId] || []));
+  const base = { provider: providerId, curated, default: DEFAULT_MODELS[providerId] || configuredModels[0] || null };
 
   const hit = cache.get(providerId);
   if (!refresh && hit && hit.until > now()) return hit.payload;
@@ -232,14 +290,32 @@ export async function listModels(provider, {
         });
         break;
     }
-    models = dedupe(models);
-    if (!models.length) throw new Error('provider returned no models');
-    payload = { ...base, models: order(models, curated), source: 'live', error: null, fetchedAt: now() };
-  } catch (err) {
+    models = dedupe(models || []);
+    let finalModels = [];
+    if (models.length) {
+      finalModels = order(models, curated);
+    } else if (configuredModels.length) {
+      finalModels = configuredModels.map((id) => entry(id));
+    } else if (!isCustom) {
+      finalModels = curated.map((id) => entry(id));
+    }
+
     payload = {
       ...base,
-      models: curated.map((id) => entry(id)),
-      source: 'curated',
+      models: finalModels,
+      source: models.length ? 'live' : (finalModels.length ? 'curated' : 'empty'),
+      error: null,
+      fetchedAt: now(),
+    };
+  } catch (err) {
+    const fallbackModels = configuredModels.length
+      ? configuredModels.map((id) => entry(id))
+      : (!isCustom ? curated.map((id) => entry(id)) : []);
+
+    payload = {
+      ...base,
+      models: fallbackModels,
+      source: fallbackModels.length ? 'curated' : 'empty',
       error: err?.name === 'AbortError' ? `timed out after ${timeoutMs}ms` : (err?.message || String(err)),
       fetchedAt: now(),
     };

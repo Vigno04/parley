@@ -228,3 +228,28 @@ test('formatContext compacts token windows', () => {
   assert.equal(formatContext(512), '512');
   assert.equal(formatContext(null), '');
 });
+
+test('custom provider with configured models returns those models as primary catalog', async () => {
+  const provider = {
+    id: 'my-ollama',
+    kind: 'ollama',
+    base_url: 'http://localhost:11434',
+    models: JSON.stringify(['llama3.2', 'deepseek-r1:8b']),
+  };
+  const fetchImpl = async () => { throw new Error('connection refused'); };
+  const cat = await listModels(provider, { fetchImpl });
+  assert.deepEqual(cat.models.map((m) => m.id), ['llama3.2', 'deepseek-r1:8b']);
+});
+
+test('custom provider with failed live fetch does not fall back to standard provider curated models', async () => {
+  const provider = {
+    id: 'my-custom-llm',
+    kind: 'openai-compatible',
+    base_url: 'http://192.168.1.50:8000',
+    models: null,
+  };
+  const fetchImpl = async () => { throw new Error('endpoint down'); };
+  const cat = await listModels(provider, { fetchImpl });
+  assert.deepEqual(cat.models, []);
+  assert.equal(cat.source, 'empty');
+});

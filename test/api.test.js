@@ -372,6 +372,57 @@ test('D3: no-auth standalone server (no req.user attached) still passes admin ro
   } finally { close(); }
 });
 
+test('POST and GET /api/providers stores exposed models and lists them', async () => {
+  const db = openDb(':memory:');
+  const { base, close } = await listen(appWith(db));
+  try {
+    const postRes = await fetch(`${base}/api/providers`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'test-ollama',
+        name: 'My Ollama',
+        kind: 'ollama',
+        baseUrl: 'http://localhost:11434',
+        models: ['llama3.2', 'qwen2.5'],
+      }),
+    });
+    assert.equal(postRes.status, 200);
+    const postBody = await postRes.json();
+    assert.equal(postBody.ok, true);
+
+    const listRes = await fetch(`${base}/api/providers`);
+    const list = await listRes.json();
+    const found = list.find((p) => p.id === 'test-ollama');
+    assert.ok(found);
+    assert.equal(found.name, 'My Ollama');
+    assert.deepEqual(JSON.parse(found.models), ['llama3.2', 'qwen2.5']);
+
+    const modelsRes = await fetch(`${base}/api/providers/test-ollama/models`);
+    const modelsBody = await modelsRes.json();
+    assert.deepEqual(modelsBody.models.map((m) => m.id), ['llama3.2', 'qwen2.5']);
+  } finally { close(); }
+});
+
+test('POST /api/providers/detect-models returns live models or empty', async () => {
+  const db = openDb(':memory:');
+  const { base, close } = await listen(appWith(db));
+  try {
+    const res = await fetch(`${base}/api/providers/detect-models`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'openai-compatible',
+        baseUrl: 'http://127.0.0.1:9999',
+      }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.deepEqual(body.models, []);
+  } finally { close(); }
+});
+
 
 // ── Meeting export (#17) ──────────────────────────────────────────────────────
 

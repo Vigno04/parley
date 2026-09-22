@@ -61,9 +61,10 @@ CREATE TABLE IF NOT EXISTS providers (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
   kind       TEXT NOT NULL DEFAULT 'openai-compatible',
-  caps       TEXT NOT NULL DEFAULT 'both',
+  caps       TEXT NOT NULL DEFAULT 'summarizer',
   base_url   TEXT,
   api_key    TEXT,
+  models     TEXT,
   created_at TEXT NOT NULL
 );
 `;
@@ -111,6 +112,11 @@ export function openDb(path) {
   const summaryCols = sql.prepare(`PRAGMA table_info(summaries)`).all();
   if (!summaryCols.some((c) => c.name === 'timings_json')) {
     sql.exec(`ALTER TABLE summaries ADD COLUMN timings_json TEXT`);
+  }
+  // Migration: add models column to providers table.
+  const providerCols = sql.prepare(`PRAGMA table_info(providers)`).all();
+  if (!providerCols.some((c) => c.name === 'models')) {
+    sql.exec(`ALTER TABLE providers ADD COLUMN models TEXT`);
   }
 
   return {
@@ -482,15 +488,34 @@ export function openDb(path) {
     getProvider(id) {
       return sql.prepare(`SELECT * FROM providers WHERE id = ?`).get(id) || null;
     },
-    upsertProvider({ id, name, kind, caps, baseUrl, apiKey }) {
+    upsertProvider({ id, name, kind, caps, baseUrl, apiKey, models }) {
+      const modelsJson = models === undefined
+        ? undefined
+        : (Array.isArray(models)
+            ? JSON.stringify(models.filter(Boolean))
+            : (typeof models === 'string' && models.trim()
+                ? (models.trim().startsWith('[') ? models.trim() : JSON.stringify(models.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean)))
+                : null));
+
       sql.prepare(
-        `INSERT INTO providers (id, name, kind, caps, base_url, api_key, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO providers (id, name, kind, caps, base_url, api_key, models, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name, kind = excluded.kind, caps = excluded.caps,
            base_url = excluded.base_url,
-           api_key = CASE WHEN excluded.api_key IS NULL THEN providers.api_key ELSE excluded.api_key END`
-      ).run(id, name, kind || 'openai-compatible', caps || 'both', baseUrl || null, apiKey || null, new Date().toISOString());
+           api_key = CASE WHEN excluded.api_key IS NULL THEN providers.api_key ELSE excluded.api_key END,
+           models = CASE WHEN ? THEN providers.models ELSE excluded.models END`
+      ).run(
+        id,
+        name,
+        kind || 'openai-compatible',
+        caps || 'summarizer',
+        baseUrl || null,
+        apiKey || null,
+        modelsJson ?? null,
+        new Date().toISOString(),
+        models === undefined ? 1 : 0
+      );
       return this.getProvider(id);
     },
     deleteProvider(id) {

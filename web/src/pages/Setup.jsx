@@ -7,7 +7,6 @@ import { Icon, Empty } from '../components/ui.jsx';
 import { ModelPicker } from '../components/ModelPicker.jsx';
 import { ConnectionForm, BotStatusBadge } from '../components/Connection.jsx';
 
-const WHISPER = ['tiny', 'base', 'small', 'medium', 'large-v3', 'large-v3-turbo'];
 const LANGS = [['auto', 'Auto-detect'], ['en', 'English'], ['de', 'German'], ['es', 'Spanish'], ['fr', 'French'],
   ['it', 'Italian'], ['pt', 'Portuguese'], ['nl', 'Dutch'], ['ru', 'Russian'], ['ja', 'Japanese'], ['zh', 'Chinese']];
 const SUMMARY_LANGS = [['match', 'Match transcription'], ...LANGS.filter(([c]) => c !== 'auto')];
@@ -16,12 +15,6 @@ const PROVIDER_KINDS = [
   { id: 'openai-compatible', label: 'OpenAI-compatible', defaultUrl: 'https://api.openai.com/v1', hint: 'Groq, DeepSeek, Together, OpenRouter, vLLM, OpenAI, etc.' },
   { id: 'gemini', label: 'Google Gemini', defaultUrl: '', hint: 'Uses Google AI Studio SDK' },
   { id: 'ollama', label: 'Ollama', defaultUrl: 'http://localhost:11434', hint: 'Local or network Ollama instance' },
-];
-
-const CAP_OPTIONS = [
-  { id: 'both', label: 'Summarizer & Transcription (STT)' },
-  { id: 'summarizer', label: 'Summarizer only' },
-  { id: 'stt', label: 'Transcription (STT) only' },
 ];
 
 function useCatalog(provider) {
@@ -91,7 +84,17 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
   const [name, setName] = useState(initial?.name || '');
   const [baseUrl, setBaseUrl] = useState(initial?.base_url || initial?.baseUrl || '');
   const [apiKey, setApiKey] = useState('');
-  const [caps, setCaps] = useState(initial?.caps || 'both');
+  const [modelsStr, setModelsStr] = useState(() => {
+    if (!initial?.models) return '';
+    if (Array.isArray(initial.models)) return initial.models.join(', ');
+    try {
+      const parsed = JSON.parse(initial.models);
+      if (Array.isArray(parsed)) return parsed.join(', ');
+    } catch { /* use raw */ }
+    return String(initial.models);
+  });
+  const [detecting, setDetecting] = useState(false);
+  const [detectMsg, setDetectMsg] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -105,17 +108,44 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
     }
   }
 
+  async function handleDetect() {
+    setDetecting(true);
+    setDetectMsg(null);
+    try {
+      const res = await api.detectModels({
+        kind,
+        baseUrl: baseUrl.trim() || undefined,
+        apiKey: apiKey.trim() || undefined,
+      });
+      if (res.ok && res.models?.length) {
+        setModelsStr(res.models.join(', '));
+        setDetectMsg({ ok: true, text: `Found ${res.models.length} models: ${res.models.slice(0, 3).join(', ')}${res.models.length > 3 ? '…' : ''}` });
+      } else {
+        setDetectMsg({ ok: false, text: res.error || 'No models discovered from endpoint. You can write model names manually.' });
+      }
+    } catch (e) {
+      setDetectMsg({ ok: false, text: e.message || 'Detection failed. You can write model names manually.' });
+    } finally {
+      setDetecting(false);
+    }
+  }
+
   async function submit(e) {
     e.preventDefault();
     setBusy(true);
     setErr(null);
     try {
+      const parsedModels = modelsStr.trim()
+        ? modelsStr.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean)
+        : null;
+
       const payload = {
         name: name.trim(),
         kind,
-        caps,
+        caps: 'summarizer',
         baseUrl: baseUrl.trim() || null,
         apiKey: apiKey.trim() || undefined,
+        models: parsedModels,
       };
       if (isNew) {
         payload.id = id.trim().toLowerCase();
@@ -157,24 +187,7 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
           </div>
         </Field>
 
-        <Field label="Capabilities">
-          <div className="relative">
-            <select
-              value={caps}
-              onChange={(e) => setCaps(e.target.value)}
-              className="input appearance-none pr-9 cursor-pointer"
-            >
-              {CAP_OPTIONS.map((c) => (
-                <option key={c.id} value={c.id}>{c.label}</option>
-              ))}
-            </select>
-            <Chevron />
-          </div>
-        </Field>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <Field label="Identifier (slug)" hint={isNew ? 'Unique key used by /setup, e.g. "groq" or "openrouter"' : 'Cannot be changed'}>
+        <Field label="Identifier (slug)" hint={isNew ? 'Unique key used by /setup, e.g. "groq" or "vllm"' : 'Cannot be changed'}>
           <input
             type="text"
             disabled={!isNew}
@@ -185,18 +198,18 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
             className="input disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </Field>
-
-        <Field label="Display Name">
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Groq Cloud"
-            required
-            className="input"
-          />
-        </Field>
       </div>
+
+      <Field label="Display Name">
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Groq Cloud"
+          required
+          className="input"
+        />
+      </Field>
 
       <Field label="Base URL" hint={kind === 'gemini' ? 'Optional for Gemini (defaults to Google AI endpoint)' : selectedKind.defaultUrl ? `e.g. ${selectedKind.defaultUrl}` : undefined}>
         <input
@@ -213,7 +226,7 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
         hint={
           !isNew && initial?.hasKey
             ? 'Key already configured. Enter a new key only to replace it.'
-            : kind === 'ollama' ? 'Optional for local Ollama' : 'Stored securely in database, never sent to clients'
+            : kind === 'ollama' ? 'Optional for local Ollama' : 'Optional for local endpoints; stored securely in database'
         }
       >
         <input
@@ -223,6 +236,38 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
           placeholder={!isNew && initial?.hasKey ? '••••••••  (leave empty to keep current)' : 'Paste API key…'}
           className="input"
         />
+      </Field>
+
+      <Field
+        label="Exposed Models"
+        hint="Comma-separated list of model names or IDs. If left blank, models will be fetched live on demand when configuring."
+      >
+        <div className="space-y-1.5">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={modelsStr}
+              onChange={(e) => setModelsStr(e.target.value)}
+              placeholder="e.g. llama3.2, deepseek-r1:8b"
+              className="input flex-1"
+            />
+            <button
+              type="button"
+              onClick={handleDetect}
+              disabled={detecting}
+              className="btn btn-ghost !py-1.5 shrink-0 text-xs inline-flex items-center gap-1.5"
+              title="Query endpoint for available models"
+            >
+              <Icon.Refresh width={13} height={13} className={detecting ? 'animate-spin' : ''} />
+              {detecting ? 'Detecting…' : 'Detect models'}
+            </button>
+          </div>
+          {detectMsg && (
+            <p className={`text-xs ${detectMsg.ok ? 'text-accent' : 'text-warn'}`}>
+              {detectMsg.text}
+            </p>
+          )}
+        </div>
       </Field>
 
       {err && <p className="text-xs text-error">{err}</p>}
@@ -337,9 +382,15 @@ function ProvidersCard({ providers, onReload, onSelected }) {
                     <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-surface-3 text-muted">
                       {p.kind}
                     </span>
-                    <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-surface-3 text-muted">
-                      {p.caps === 'both' ? 'Summarizer & STT' : p.caps === 'stt' ? 'STT only' : 'Summarizer only'}
-                    </span>
+                    {p.models && (
+                      <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-surface-3 text-muted">
+                        {Array.isArray(p.models)
+                          ? `${p.models.length} model${p.models.length === 1 ? '' : 's'}`
+                          : (String(p.models).trim().startsWith('[')
+                              ? `${JSON.parse(p.models).length} models`
+                              : `${String(p.models).split(',').length} models`)}
+                      </span>
+                    )}
                     <span
                       className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full ${
                         p.hasKey ? 'text-accent bg-accent-soft' : 'text-warn bg-warn-soft'
@@ -391,88 +442,6 @@ function ProvidersCard({ providers, onReload, onSelected }) {
         </div>
       )}
     </Card>
-  );
-}
-
-/* ── Local sidecar status + on/off control ───────────────────────────────── */
-function SidecarControl({ sys, onChanged }) {
-  const sc = sys?.sidecar;
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState(null);
-  if (!sc) return null;
-
-  const map = {
-    running: { label: 'Running', color: 'var(--accent)', bg: 'var(--accent-soft)' },
-    starting: { label: 'Starting…', color: 'var(--warn)', bg: 'var(--warn-soft)' },
-    error: { label: 'Stopped', color: 'var(--error)', bg: 'var(--error-soft)' },
-    stopped: { label: 'Stopped', color: 'var(--muted)', bg: 'var(--surface-3)' },
-  };
-  const s = map[sc.state] || map.stopped;
-  const running = sc.state === 'running';
-
-  async function act(action) {
-    setBusy(true); setErr(null);
-    try { await api.sidecarAction(action); await onChanged?.(); }
-    catch (e) { setErr(e?.message || `Failed to ${action} sidecar`); }
-    finally { setBusy(false); }
-  }
-
-  if (!sc.managed) {
-    return (
-      <div className="rounded-md bg-surface-2 px-3.5 py-3 text-xs text-muted">
-        The local whisper sidecar is managed outside this process
-        {sc.url ? <> (<code className="text-ink-2">{sc.url}</code>)</> : null}. In Docker it runs as its
-        own container and starts/stops with <code className="text-ink-2">docker compose</code>.
-      </div>
-    );
-  }
-
-  return (
-    <div className="rounded-md border border-border px-3.5 py-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[13px] font-medium text-ink">Local sidecar</span>
-          <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full" style={{ color: s.color, background: s.bg }}>
-            <span style={{ width: 6, height: 6, borderRadius: 6, background: s.color }} />
-            {s.label}{sc.external ? ' · external' : ''}
-          </span>
-          {running && sc.device && <DeviceBadge device={sc.device} model={sc.model} batchSize={sc.batchSize} />}
-        </div>
-        <div className="flex items-center gap-2">
-          {running
-            ? <button onClick={() => act('stop')} disabled={busy} className="btn btn-ghost !py-1.5">{busy ? '…' : 'Stop'}</button>
-            : <button onClick={() => act('start')} disabled={busy} className="btn btn-primary !py-1.5">{busy ? 'Starting…' : 'Start sidecar'}</button>}
-          {running && <button onClick={() => act('restart')} disabled={busy} className="btn btn-ghost !py-1.5">Restart</button>}
-        </div>
-      </div>
-      <p className="text-xs text-muted mt-2">
-        {running
-          ? 'Transcribing locally on this machine. Turn it off to free CPU/RAM when using a cloud API.'
-          : 'Off. Start it to transcribe locally without a cloud API.'}
-      </p>
-      {running && sc.device === 'cpu' && (
-        <p className="text-xs mt-2 rounded-sm px-2.5 py-2" style={{ color: 'var(--warn)', background: 'var(--warn-soft)' }}>
-          ⚠ Running on <b>CPU</b> — transcription is roughly 7x slower than GPU and is the usual cause of
-          lag on longer meetings. If this machine has an NVIDIA GPU, install the CUDA libraries so the
-          sidecar can use it (see the README GPU section).
-        </p>
-      )}
-      {(err || sc.error) && <p className="text-xs text-error mt-1.5">{err || sc.error}</p>}
-    </div>
-  );
-}
-
-function DeviceBadge({ device, model, batchSize }) {
-  const gpu = device === 'cuda';
-  const color = gpu ? 'var(--accent)' : 'var(--warn)';
-  const bg = gpu ? 'var(--accent-soft)' : 'var(--warn-soft)';
-  const label = gpu ? 'GPU' : device === 'cpu' ? 'CPU' : device;
-  const detail = [model, batchSize ? `batch ${batchSize}` : null].filter(Boolean).join(' · ');
-  return (
-    <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full"
-      style={{ color, background: bg }} title={`STT on ${device}${detail ? ` (${detail})` : ''}`}>
-      {label}{detail ? <span className="opacity-70">· {detail}</span> : null}
-    </span>
   );
 }
 
@@ -600,7 +569,21 @@ export default function Setup() {
               <select
                 className={sel}
                 value={c.summarizerProvider || ''}
-                onChange={(e) => save({ provider: e.target.value, model: '' })}
+                onChange={(e) => {
+                  const newP = e.target.value;
+                  const pObj = providerList.find((p) => p.id === newP);
+                  let defModel = '';
+                  if (pObj?.models) {
+                    try {
+                      const m = Array.isArray(pObj.models) ? pObj.models : JSON.parse(pObj.models);
+                      if (m && m[0]) defModel = m[0];
+                    } catch {
+                      const parts = String(pObj.models).split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
+                      if (parts[0]) defModel = parts[0];
+                    }
+                  }
+                  save({ provider: newP, model: defModel });
+                }}
               >
                 {providers.length === 0 && <option value="">No providers configured</option>}
                 {providers.map((p) => (
@@ -652,67 +635,6 @@ export default function Setup() {
                 />
               </div>
             )}
-          </Field>
-        </Card>
-
-        <Card title="Transcription" desc="How spoken audio becomes text.">
-          <Field label="Provider" hint={c.sttProvider === 'sidecar' ? 'Local faster-whisper sidecar container' : 'Cloud STT endpoint'}>
-            <div className="relative">
-              <select
-                className={sel}
-                value={c.sttProvider || 'sidecar'}
-                onChange={(e) => save({ sttProvider: e.target.value, sttModel: e.target.value === 'sidecar' ? null : '' })}
-              >
-                {sttProviders.map((p) => (
-                  <option key={p.provider} value={p.provider}>
-                    {p.label || p.provider}{p.ok ? '' : ' (no key set)'}
-                  </option>
-                ))}
-              </select>
-              <Chevron />
-            </div>
-          </Field>
-
-          {c.sttProvider === 'sidecar' ? (
-            <>
-              <Field label="Whisper model" hint="Larger is more accurate but slower on CPU.">
-                <div className="relative">
-                  <select
-                    className={sel}
-                    value={c.whisperModel}
-                    onChange={(e) => save({ whisperModel: e.target.value })}
-                  >
-                    {WHISPER.map((m) => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                  <Chevron />
-                </div>
-              </Field>
-              <SidecarControl sys={sys} onChanged={refreshSys} />
-            </>
-          ) : (
-            <>
-              <Field label="Model" hint="STT model id (e.g. whisper-1 for OpenAI, or your model name).">
-                <input
-                  type="text"
-                  value={c.sttModel || ''}
-                  placeholder="whisper-1"
-                  onChange={(e) => save({ sttModel: e.target.value })}
-                  className="input"
-                />
-              </Field>
-              {sys?.sidecar?.managed && sys?.sidecar?.running && (
-                <SidecarControl sys={sys} onChanged={refreshSys} />
-              )}
-            </>
-          )}
-
-          <Field label="Spoken language">
-            <div className="relative">
-              <select className={sel} value={c.language} onChange={(e) => save({ language: e.target.value })}>
-                {LANGS.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
-              </select>
-              <Chevron />
-            </div>
           </Field>
         </Card>
 

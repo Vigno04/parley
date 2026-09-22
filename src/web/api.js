@@ -281,7 +281,7 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
   });
 
   r.post('/providers', requireAdmin, (req, res) => {
-    const { id, name, kind, caps, baseUrl, apiKey } = req.body || {};
+    const { id, name, kind, caps, baseUrl, apiKey, models } = req.body || {};
     if (!id || !name) return res.status(400).json({ error: 'id and name are required.' });
     if (!/^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$/.test(id)) {
       return res.status(400).json({ error: 'id must be lowercase alphanumeric with hyphens/underscores.' });
@@ -297,7 +297,15 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     if (caps && !validCaps.includes(caps)) {
       return res.status(400).json({ error: `caps must be one of: ${validCaps.join(', ')}.` });
     }
-    const row = db.upsertProvider({ id, name, kind: kind || 'openai-compatible', caps: caps || 'both', baseUrl, apiKey });
+    const row = db.upsertProvider({
+      id,
+      name,
+      kind: kind || 'openai-compatible',
+      caps: caps || 'summarizer',
+      baseUrl,
+      apiKey,
+      models,
+    });
     const { api_key, ...safe } = row;
     res.json({ ok: true, provider: { ...safe, hasKey: !!api_key } });
   });
@@ -305,7 +313,7 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
   r.patch('/providers/:id', requireAdmin, (req, res) => {
     const existing = db.getProvider(req.params.id);
     if (!existing) return res.status(404).json({ error: 'provider not found' });
-    const { name, kind, caps, baseUrl, apiKey } = req.body || {};
+    const { name, kind, caps, baseUrl, apiKey, models } = req.body || {};
     const row = db.upsertProvider({
       id: req.params.id,
       name: name ?? existing.name,
@@ -313,6 +321,7 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
       caps: caps ?? existing.caps,
       baseUrl: baseUrl !== undefined ? baseUrl : existing.base_url,
       apiKey: apiKey !== undefined ? apiKey : null, // null = keep existing
+      models: models !== undefined ? models : existing.models,
     });
     const { api_key, ...safe } = row;
     clearModelCache(req.params.id);
@@ -327,12 +336,34 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     res.json({ ok: true });
   });
 
+  // Test connectivity & detect models from endpoint before saving.
+  r.post('/providers/detect-models', requireAdmin, async (req, res) => {
+    const { kind, baseUrl, apiKey } = req.body || {};
+    const dummy = {
+      id: 'tmp-detect',
+      kind: kind || 'openai-compatible',
+      base_url: baseUrl || '',
+      api_key: apiKey || null,
+    };
+    const result = await listModels(dummy, { timeoutMs: 6000, refresh: true });
+    res.json({
+      ok: result.source === 'live',
+      models: result.models.map((m) => m.id),
+      error: result.error,
+    });
+  });
+
   // Test connectivity: try fetching the provider's model catalog.
   r.post('/providers/:id/test', requireAdmin, async (req, res) => {
     const row = db.getProvider(req.params.id);
     if (!row) return res.status(404).json({ error: 'provider not found' });
-    const result = await listModels(row, { timeoutMs: 8000 });
-    res.json({ ok: result.source === 'live', models: result.models.length, error: result.error });
+    const result = await listModels(row, { timeoutMs: 8000, refresh: true });
+    res.json({
+      ok: result.source === 'live',
+      count: result.models.length,
+      models: result.models.map((m) => m.id),
+      error: result.error,
+    });
   });
 
   r.put('/providers/:provider/key', requireAdmin, (req, res) => {

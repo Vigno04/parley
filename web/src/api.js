@@ -62,6 +62,7 @@ export const api = {
   updateProvider: (id, patch) => fetch(`/api/providers/${id}`, jsonBody('PATCH', patch)).then(json),
   deleteProvider: (id) => fetch(`/api/providers/${id}`, { method: 'DELETE' }).then(json),
   testProvider: (id) => fetch(`/api/providers/${id}/test`, { method: 'POST' }).then(json),
+  detectModels: (payload) => fetch('/api/providers/detect-models', jsonBody('POST', payload)).then(json),
   providerModels: (provider, refresh = false) => fetch(`/api/providers/${provider}/models${refresh ? '?refresh=1' : ''}`).then(json),
   setProviderKey: (provider, key) => fetch(`/api/providers/${provider}/key`, jsonBody('PUT', { key })).then(json),
   systemStatus: () => fetch('/api/system/status').then(json),

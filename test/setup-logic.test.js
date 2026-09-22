@@ -164,3 +164,22 @@ test('fallback model alone updates only the model', () => {
   assert.equal(r.patch.summarizerFallbackModel, 'glm-5.3');
   assert.equal('summarizerFallbackProvider' in r.patch, false);
 });
+
+test('accepts custom provider with baseUrl even if apiKey is missing', () => {
+  const db = {
+    getProvider: (id) => id === 'local-llm' ? { id, kind: 'openai-compatible', base_url: 'http://localhost:8000', api_key: null, caps: 'summarizer' } : null,
+  };
+  const r = validateSetup({ provider: 'local-llm' }, db);
+  assert.equal(r.ok, true);
+  assert.equal(r.patch.summarizerProvider, 'local-llm');
+});
+
+test('switching provider with empty model clears summarizerModel', () => {
+  const db = {
+    getProvider: (id) => id === 'local-llm' ? { id, kind: 'openai-compatible', base_url: 'http://localhost:8000', api_key: null, caps: 'summarizer' } : null,
+  };
+  const r = validateSetup({ provider: 'local-llm', model: '' }, db);
+  assert.equal(r.ok, true);
+  assert.equal(r.patch.summarizerProvider, 'local-llm');
+  assert.equal(r.patch.summarizerModel, null);
+});

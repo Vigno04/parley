@@ -14,7 +14,9 @@ export function providerReady(providerId, dbOrEnv) {
     const row = dbOrEnv.getProvider(providerId);
     if (row) {
       if (row.kind === 'ollama') return { ok: !!row.base_url, missing: row.base_url ? null : 'base_url' };
-      return { ok: !!row.api_key, missing: row.api_key ? null : 'api_key' };
+      // Allow custom / local providers without an API key if base_url is present
+      const ok = !!(row.api_key || row.base_url);
+      return { ok, missing: ok ? null : 'api_key or base_url' };
     }
   }
 
@@ -63,7 +65,9 @@ export function validateSetup(input, dbOrEnv) {
       }
     }
     patch.summarizerProvider = input.provider;
-    if (input.model) patch.summarizerModel = input.model;
+    if (input.model !== undefined) {
+      patch.summarizerModel = input.model || null;
+    }
   }
 
   if (input.fallbackProvider !== undefined) {
