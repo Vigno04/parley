@@ -12,28 +12,18 @@ const LANGS = [['auto', 'Auto-detect'], ['en', 'English'], ['de', 'German'], ['e
   ['it', 'Italian'], ['pt', 'Portuguese'], ['nl', 'Dutch'], ['ru', 'Russian'], ['ja', 'Japanese'], ['zh', 'Chinese']];
 const SUMMARY_LANGS = [['match', 'Match transcription'], ...LANGS.filter(([c]) => c !== 'auto')];
 
-// Model defaults come from the server (adapters/summarizer/models.js) so the
-// dashboard, /setup and the adapters can't drift apart.
-// Providers whose key is editable from the UI (Ollama is keyless/local).
-const KEYED = {
-  gemini: 'GEMINI_API_KEY', openai: 'OPENAI_API_KEY', opencode: 'OPENCODE_API_KEY',
-  openrouter: 'OPENROUTER_API_KEY',
-};
-const KEY_HELP = {
-  gemini: 'aistudio.google.com/apikey',
-  openai: 'platform.openai.com/api-keys',
-  opencode: 'opencode.ai/zen',
-  openrouter: 'openrouter.ai/keys',
-};
-// Which env secret each STT provider needs (sidecar is keyless/local).
-const STT_KEY = { openai: 'openai' };
-const STT_HELP = {
-  sidecar: 'Runs the local faster-whisper container. Free and fully offline, but uses your CPU.',
-  openai: 'OpenAI (or any OpenAI-compatible) transcription endpoint.',
-};
-// The provider's model catalog, fetched live (and re-fetchable with refresh,
-// which bypasses the server's cache). `seq` drops responses that land after the
-// provider already changed.
+const PROVIDER_KINDS = [
+  { id: 'openai-compatible', label: 'OpenAI-compatible', defaultUrl: 'https://api.openai.com/v1', hint: 'Groq, DeepSeek, Together, OpenRouter, vLLM, OpenAI, etc.' },
+  { id: 'gemini', label: 'Google Gemini', defaultUrl: '', hint: 'Uses Google AI Studio SDK' },
+  { id: 'ollama', label: 'Ollama', defaultUrl: 'http://localhost:11434', hint: 'Local or network Ollama instance' },
+];
+
+const CAP_OPTIONS = [
+  { id: 'both', label: 'Summarizer & Transcription (STT)' },
+  { id: 'summarizer', label: 'Summarizer only' },
+  { id: 'stt', label: 'Transcription (STT) only' },
+];
+
 function useCatalog(provider) {
   const [state, setState] = useState({ catalog: null, loading: !!provider });
   const seq = useRef(0);
@@ -59,12 +49,15 @@ function Field({ label, hint, children }) {
   );
 }
 
-function Card({ title, desc, children }) {
+function Card({ title, desc, extra, children }) {
   return (
     <section className="card p-5">
-      <div className="mb-4">
-        <h2 className="text-sm font-bold text-ink">{title}</h2>
-        {desc && <p className="text-xs text-muted mt-0.5">{desc}</p>}
+      <div className="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <h2 className="text-sm font-bold text-ink">{title}</h2>
+          {desc && <p className="text-xs text-muted mt-0.5">{desc}</p>}
+        </div>
+        {extra && <div>{extra}</div>}
       </div>
       <div className="space-y-4">{children}</div>
     </section>
@@ -91,72 +84,322 @@ function Chevron() {
   return <Icon.Chevron width={14} height={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rotate-90 text-muted" />;
 }
 
-/* ── API key editor ───────────────────────────────────────────────────────
-   Shows a "set / not set" badge; lets the user paste a new key (saved to .env,
-   applied live) or clear it. The value is never read back from the server. */
-function KeyEditor({ provider, present, onChanged, autoEdit = false }) {
-  const envVar = KEYED[provider];
-  const [editing, setEditing] = useState(autoEdit && !present);
-  const [value, setValue] = useState('');
+/* ── Provider Form (Create / Edit) ────────────────────────────────────────── */
+function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
+  const [kind, setKind] = useState(initial?.kind || 'openai-compatible');
+  const [id, setId] = useState(initial?.id || '');
+  const [name, setName] = useState(initial?.name || '');
+  const [baseUrl, setBaseUrl] = useState(initial?.base_url || initial?.baseUrl || '');
+  const [apiKey, setApiKey] = useState('');
+  const [caps, setCaps] = useState(initial?.caps || 'both');
   const [busy, setBusy] = useState(false);
-  const [reveal, setReveal] = useState(false);
   const [err, setErr] = useState(null);
 
-  async function save() {
-    setBusy(true); setErr(null);
-    try { await api.setProviderKey(provider, value.trim()); setValue(''); setEditing(false); onChanged?.(); }
-    catch (e) { setErr(e?.message || 'Failed to save key'); }
-    finally { setBusy(false); }
+  const selectedKind = PROVIDER_KINDS.find((k) => k.id === kind) || PROVIDER_KINDS[0];
+
+  function handleKindChange(newKind) {
+    setKind(newKind);
+    const kDef = PROVIDER_KINDS.find((k) => k.id === newKind);
+    if (!baseUrl || PROVIDER_KINDS.some((p) => p.defaultUrl === baseUrl)) {
+      setBaseUrl(kDef?.defaultUrl || '');
+    }
   }
-  async function clear() {
-    if (!window.confirm(`Remove the ${provider} API key from .env?`)) return;
-    setBusy(true); setErr(null);
-    try { await api.setProviderKey(provider, ''); setValue(''); setEditing(false); onChanged?.(); }
-    catch (e) { setErr(e?.message || 'Failed to clear key'); }
-    finally { setBusy(false); }
+
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true);
+    setErr(null);
+    try {
+      const payload = {
+        name: name.trim(),
+        kind,
+        caps,
+        baseUrl: baseUrl.trim() || null,
+        apiKey: apiKey.trim() || undefined,
+      };
+      if (isNew) {
+        payload.id = id.trim().toLowerCase();
+        if (!payload.id) throw new Error('Provider ID is required');
+        await api.createProvider(payload);
+      } else {
+        await api.updateProvider(initial.id, payload);
+      }
+      onSave?.();
+    } catch (error) {
+      setErr(error.message || 'Failed to save provider');
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
-    <Field label="API key" hint={err ? undefined : <>Stored in <code className="text-ink-2">.env</code> as <code className="text-ink-2">{envVar}</code> · get one at {KEY_HELP[provider]}</>}>
-      {!editing ? (
-        <div className="flex items-center gap-2">
-          <span className={`inline-flex items-center gap-1.5 text-[13px] font-medium px-2.5 py-1.5 rounded-sm ${present ? 'text-accent bg-accent-soft' : 'text-warn bg-warn-soft'}`}>
-            <span style={{ width: 6, height: 6, borderRadius: 6, background: 'currentColor' }} />
-            {present ? 'Key set' : 'No key'}
-          </span>
-          <button onClick={() => setEditing(true)} className="btn btn-ghost !py-1.5">{present ? 'Replace' : 'Add key'}</button>
-          {present && <button onClick={clear} disabled={busy} className="btn btn-ghost !py-1.5 !text-error">Remove</button>}
-        </div>
-      ) : (
-        <div className="flex items-center gap-2">
-          <div className="relative flex-1">
-            <input
-              type={reveal ? 'text' : 'password'} value={value} autoFocus
-              onChange={(e) => setValue(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') { setEditing(false); setValue(''); } }}
-              placeholder={`Paste ${provider} API key…`} className="input !pr-10" />
-            <button type="button" onClick={() => setReveal((r) => !r)}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-ink text-xs">{reveal ? 'Hide' : 'Show'}</button>
+    <form onSubmit={submit} className="rounded-lg border border-border bg-surface-1 p-4 space-y-3.5">
+      <div className="flex items-center justify-between pb-2 border-b border-border">
+        <span className="text-xs font-semibold uppercase tracking-wider text-muted">
+          {isNew ? 'Add AI Provider' : `Edit Provider: ${initial.name}`}
+        </span>
+        <button type="button" onClick={onCancel} className="text-xs text-muted hover:text-ink">Cancel</button>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <Field label="Standard / Type" hint={selectedKind.hint}>
+          <div className="relative">
+            <select
+              value={kind}
+              onChange={(e) => handleKindChange(e.target.value)}
+              className="input appearance-none pr-9 cursor-pointer"
+            >
+              {PROVIDER_KINDS.map((k) => (
+                <option key={k.id} value={k.id}>{k.label}</option>
+              ))}
+            </select>
+            <Chevron />
           </div>
-          <button onClick={save} disabled={!value.trim() || busy} className="btn btn-primary !py-2">{busy ? 'Saving…' : 'Save'}</button>
-          <button onClick={() => { setEditing(false); setValue(''); }} disabled={busy} className="btn btn-ghost !py-2">Cancel</button>
-        </div>
-      )}
-      {err && <p className="text-xs text-error mt-1.5">{err}</p>}
-    </Field>
+        </Field>
+
+        <Field label="Capabilities">
+          <div className="relative">
+            <select
+              value={caps}
+              onChange={(e) => setCaps(e.target.value)}
+              className="input appearance-none pr-9 cursor-pointer"
+            >
+              {CAP_OPTIONS.map((c) => (
+                <option key={c.id} value={c.id}>{c.label}</option>
+              ))}
+            </select>
+            <Chevron />
+          </div>
+        </Field>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <Field label="Identifier (slug)" hint={isNew ? 'Unique key used by /setup, e.g. "groq" or "openrouter"' : 'Cannot be changed'}>
+          <input
+            type="text"
+            disabled={!isNew}
+            value={id}
+            onChange={(e) => setId(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
+            placeholder="groq"
+            required
+            className="input disabled:opacity-60 disabled:cursor-not-allowed"
+          />
+        </Field>
+
+        <Field label="Display Name">
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Groq Cloud"
+            required
+            className="input"
+          />
+        </Field>
+      </div>
+
+      <Field label="Base URL" hint={kind === 'gemini' ? 'Optional for Gemini (defaults to Google AI endpoint)' : selectedKind.defaultUrl ? `e.g. ${selectedKind.defaultUrl}` : undefined}>
+        <input
+          type="text"
+          value={baseUrl}
+          onChange={(e) => setBaseUrl(e.target.value)}
+          placeholder={selectedKind.defaultUrl || 'https://api.example.com/v1'}
+          className="input"
+        />
+      </Field>
+
+      <Field
+        label="API Key"
+        hint={
+          !isNew && initial?.hasKey
+            ? 'Key already configured. Enter a new key only to replace it.'
+            : kind === 'ollama' ? 'Optional for local Ollama' : 'Stored securely in database, never sent to clients'
+        }
+      >
+        <input
+          type="password"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder={!isNew && initial?.hasKey ? '••••••••  (leave empty to keep current)' : 'Paste API key…'}
+          className="input"
+        />
+      </Field>
+
+      {err && <p className="text-xs text-error">{err}</p>}
+
+      <div className="flex items-center justify-end gap-2 pt-2">
+        <button type="button" onClick={onCancel} disabled={busy} className="btn btn-ghost !py-1.5">Cancel</button>
+        <button type="submit" disabled={busy} className="btn btn-primary !py-1.5">
+          {busy ? 'Saving…' : (isNew ? 'Create Provider' : 'Save Changes')}
+        </button>
+      </div>
+    </form>
   );
 }
 
-/* ── Local sidecar status + on/off control ─────────────────────────────────
-   The sidecar is the local faster-whisper process. It's a single global backend
-   (not per-guild), so this lives off `sys.sidecar` from /system/status. Shows a
-   live state pill and a Start/Stop button; hidden entirely when the sidecar is
-   unmanaged here (e.g. running as its own Docker container). */
+/* ── Providers Card (System-wide AI Provider Registry) ───────────────────── */
+function ProvidersCard({ providers, onReload, onSelected }) {
+  const [editingId, setEditingId] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const [testingId, setTestingId] = useState(null);
+  const [testResult, setTestResult] = useState({});
+  const [err, setErr] = useState(null);
+
+  async function handleTest(id) {
+    setTestingId(id);
+    setTestResult((prev) => ({ ...prev, [id]: null }));
+    try {
+      const res = await api.testProvider(id);
+      setTestResult((prev) => ({
+        ...prev,
+        [id]: res.ok
+          ? { ok: true, msg: `Connected (${res.models} models)` }
+          : { ok: false, msg: res.error || 'Connection failed' }
+      }));
+    } catch (e) {
+      setTestResult((prev) => ({ ...prev, [id]: { ok: false, msg: e.message } }));
+    } finally {
+      setTestingId(null);
+    }
+  }
+
+  async function handleDelete(id, name) {
+    if (!window.confirm(`Delete AI provider "${name || id}"? Guilds using this provider will need to be reconfigured.`)) return;
+    try {
+      await api.deleteProvider(id);
+      await onReload?.();
+    } catch (e) {
+      setErr(e.message || 'Failed to delete provider');
+    }
+  }
+
+  return (
+    <Card
+      title="AI Providers"
+      desc="Custom AI providers configured in SQLite. Used for summarization and cloud transcription."
+      extra={
+        !adding && (
+          <button
+            onClick={() => { setAdding(true); setEditingId(null); }}
+            className="btn btn-primary !py-1.5 inline-flex items-center gap-1.5 text-xs"
+          >
+            <Icon.Plus width={14} height={14} /> Add provider
+          </button>
+        )
+      }
+    >
+      {err && <p className="text-xs text-error mb-2">{err}</p>}
+
+      {adding && (
+        <ProviderForm
+          isNew
+          onSave={() => { setAdding(false); onReload?.(); }}
+          onCancel={() => setAdding(false)}
+        />
+      )}
+
+      {providers.length === 0 && !adding ? (
+        <div className="rounded-lg border border-dashed border-border p-6 text-center">
+          <p className="text-xs text-muted mb-3">No custom providers configured yet. Add your OpenAI, Groq, Gemini, or Ollama credentials to get started.</p>
+          <button
+            onClick={() => setAdding(true)}
+            className="btn btn-primary !py-1.5 inline-flex items-center gap-1.5 text-xs"
+          >
+            <Icon.Plus width={14} height={14} /> Add your first provider
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-2.5">
+          {providers.map((p) => {
+            if (editingId === p.id) {
+              return (
+                <ProviderForm
+                  key={p.id}
+                  initial={p}
+                  onSave={() => { setEditingId(null); onReload?.(); }}
+                  onCancel={() => setEditingId(null)}
+                />
+              );
+            }
+
+            const isTesting = testingId === p.id;
+            const res = testResult[p.id];
+
+            return (
+              <div
+                key={p.id}
+                className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-lg border border-border bg-surface-2"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[13px] font-semibold text-ink">{p.name || p.id}</span>
+                    <code className="text-xs text-muted bg-surface-3 px-1.5 py-0.5 rounded">{p.id}</code>
+                    <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-surface-3 text-muted">
+                      {p.kind}
+                    </span>
+                    <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-surface-3 text-muted">
+                      {p.caps === 'both' ? 'Summarizer & STT' : p.caps === 'stt' ? 'STT only' : 'Summarizer only'}
+                    </span>
+                    <span
+                      className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full ${
+                        p.hasKey ? 'text-accent bg-accent-soft' : 'text-warn bg-warn-soft'
+                      }`}
+                    >
+                      <span style={{ width: 5, height: 5, borderRadius: 5, background: 'currentColor' }} />
+                      {p.hasKey ? 'Key set' : 'No key'}
+                    </span>
+                  </div>
+                  {p.base_url && (
+                    <p className="text-xs text-muted truncate mt-1">
+                      Endpoint: <code className="text-ink-2">{p.base_url}</code>
+                    </p>
+                  )}
+                  {res && (
+                    <p className={`text-xs mt-1 font-medium ${res.ok ? 'text-accent' : 'text-error'}`}>
+                      {res.msg}
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                  <button
+                    type="button"
+                    onClick={() => handleTest(p.id)}
+                    disabled={isTesting}
+                    className="btn btn-ghost !py-1 !px-2.5 text-xs"
+                  >
+                    {isTesting ? 'Testing…' : 'Test'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setEditingId(p.id); setAdding(false); }}
+                    className="btn btn-ghost !py-1 !px-2.5 text-xs"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(p.id, p.name)}
+                    className="btn btn-ghost !py-1 !px-2.5 text-xs !text-error"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/* ── Local sidecar status + on/off control ───────────────────────────────── */
 function SidecarControl({ sys, onChanged }) {
   const sc = sys?.sidecar;
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
-  if (!sc) return null; // standalone web server with no controller attached
+  if (!sc) return null;
 
   const map = {
     running: { label: 'Running', color: 'var(--accent)', bg: 'var(--accent-soft)' },
@@ -219,9 +462,6 @@ function SidecarControl({ sys, onChanged }) {
   );
 }
 
-// Small pill showing the STT compute backend + model + batch size, so users can
-// see at a glance whether transcription is GPU-accelerated (fast) or on the CPU
-// fallback (slow). Green for cuda, muted/amber for cpu.
 function DeviceBadge({ device, model, batchSize }) {
   const gpu = device === 'cuda';
   const color = gpu ? 'var(--accent)' : 'var(--warn)';
@@ -236,7 +476,7 @@ function DeviceBadge({ device, model, batchSize }) {
   );
 }
 
-/* ── Connection card (server-wide Discord + STT settings) ────────────────── */
+/* ── Connection card ─────────────────────────────────────────────────────── */
 function ConnectionCard({ sys, onChanged }) {
   const [open, setOpen] = useState(false);
   const [restarting, setRestarting] = useState(false);
@@ -285,28 +525,37 @@ export default function Setup() {
   const { guildId } = useGuild();
   const { status: sys, refresh: refreshSys } = useSystem();
   const [data, setData] = useState(null);
+  const [providerList, setProviderList] = useState([]);
   const [msg, setMsg] = useState('');
   const [msgErr, setMsgErr] = useState(false);
-  // "Draft" providers: when you pick a cloud provider that has no API key yet,
-  // we stage the choice (reveal its key field) WITHOUT saving — saving would be
-  // rejected server-side ("key not set"). Once the key is added we auto-commit.
-  const [sumDraft, setSumDraft] = useState(null);
-  const [sttDraft, setSttDraft] = useState(null);
 
-  function reload() { if (guildId) api.config(guildId).then(setData).catch(() => setData(null)); }
-  useEffect(() => { reload(); }, [guildId]);
+  const loadProviders = useCallback(() => {
+    api.providers().then(setProviderList).catch(() => setProviderList([]));
+  }, []);
 
-  // One catalog per model field: the primary provider's and the fallback's.
+  const reload = useCallback(() => {
+    loadProviders();
+    if (guildId) api.config(guildId).then(setData).catch(() => setData(null));
+  }, [guildId, loadProviders]);
+
+  useEffect(() => { reload(); }, [reload]);
+
   const models = useCatalog(data?.config?.summarizerProvider);
   const fbModels = useCatalog(data?.config?.summarizerFallbackProvider);
 
   if (!guildId) return (
     <Page max="720px">
       <PageHead title="Settings" subtitle="Discord connection and per-server configuration." />
-      <ConnectionCard sys={sys} onChanged={refreshSys} />
-      <div className="mt-5"><Empty icon={Icon.Settings} title="No server selected" body="Pick a server from the top bar to configure summarizer, transcription, and delivery." /></div>
+      <div className="space-y-5">
+        <ConnectionCard sys={sys} onChanged={refreshSys} />
+        <ProvidersCard providers={providerList} onReload={reload} />
+        <div className="mt-5">
+          <Empty icon={Icon.Settings} title="No server selected" body="Pick a server from the top bar to configure summarizer, transcription, and delivery." />
+        </div>
+      </div>
     </Page>
   );
+
   if (!data) return (
     <Page max="720px">
       <div className="h-8 w-32 skeleton mb-7" />
@@ -314,64 +563,23 @@ export default function Setup() {
     </Page>
   );
 
-  const { config: c, providers, sttProviders, channels, secrets = {}, defaultModels = {} } = data;
+  const { config: c, providers = [], sttProviders = [], channels = [] } = data;
+
   const save = async (patch) => {
     try {
       const r = await api.saveConfig(guildId, patch);
       setData((d) => ({ ...d, config: r.config }));
       setMsg('Saved'); setMsgErr(false);
-      // Switching the transcription backend may have auto-started/stopped the
-      // local sidecar; refresh system status so its pill reflects reality.
       if (patch.sttProvider !== undefined) refreshSys?.();
       return true;
-    } catch (e) { setMsg(e.message); setMsgErr(true); return false; }
-    finally { setTimeout(() => setMsg(''), 2400); }
+    } catch (e) {
+      setMsg(e.message); setMsgErr(true); return false;
+    } finally {
+      setTimeout(() => setMsg(''), 2400);
+    }
   };
+
   const sel = 'input appearance-none pr-9 cursor-pointer';
-
-  // ── Summarizer provider, with draft-before-key handling ───────────────────
-  const sumProvider = sumDraft || c.summarizerProvider;        // shown in the <select>
-  const sumReady = (providers.find((p) => p.provider === sumProvider) || {}).ok;
-  const sumKeyed = Object.prototype.hasOwnProperty.call(KEYED, sumProvider);
-  function pickSummarizer(p) {
-    const ready = (providers.find((x) => x.provider === p) || {}).ok;
-    if (!ready && Object.prototype.hasOwnProperty.call(KEYED, p)) {
-      setSumDraft(p);              // stage it; reveal the key field, don't save yet
-      setMsg(''); 
-    } else {
-      setSumDraft(null);
-      save({ provider: p, model: defaultModels[p] || '' });
-    }
-  }
-  // After a key lands for the staged provider, commit the switch.
-  async function commitSumKey() {
-    await reload();
-    if (sumDraft) { await save({ provider: sumDraft, model: defaultModels[sumDraft] || '' }); setSumDraft(null); }
-  }
-
-  // ── Transcription provider, same pattern ──────────────────────────────────
-  const sttProvider = sttDraft || c.sttProvider;
-  const sttReady = (sttProviders || []).find((p) => p.provider === sttProvider)?.ok;
-  const sttKeyed = Object.prototype.hasOwnProperty.call(STT_KEY, sttProvider);
-  const sttModels = (sttProviders || []).find((p) => p.provider === sttProvider)?.models || [];
-  function pickStt(p) {
-    const sp = (sttProviders || []).find((x) => x.provider === p);
-    if (!sp?.ok && Object.prototype.hasOwnProperty.call(STT_KEY, p)) {
-      setSttDraft(p);              // stage it; reveal the key field, don't save yet
-      setMsg('');
-    } else {
-      setSttDraft(null);
-      save({ sttProvider: p, sttModel: p === 'sidecar' ? null : (sp?.models?.[0] ?? null) });
-    }
-  }
-  async function commitSttKey() {
-    await reload(); refreshSys?.();
-    if (sttDraft) {
-      const sp = (sttProviders || []).find((x) => x.provider === sttDraft);
-      await save({ sttProvider: sttDraft, sttModel: sp?.models?.[0] ?? null });
-      setSttDraft(null);
-    }
-  }
 
   return (
     <Page max="720px">
@@ -383,11 +591,18 @@ export default function Setup() {
 
       <div className="space-y-5">
         <ConnectionCard sys={sys} onChanged={refreshSys} />
+
+        <ProvidersCard providers={providerList} onReload={reload} />
+
         <Card title="Summarizer" desc="Which AI turns transcripts into structured notes.">
-          <Field label="Provider" hint={sumDraft ? 'Add the API key below to switch to this provider.' : undefined}>
+          <Field label="Provider" hint={providers.length === 0 ? 'No providers configured yet. Add one in the AI Providers section above.' : undefined}>
             <div className="relative">
-              <select className={sel} value={sumProvider}
-                onChange={(e) => pickSummarizer(e.target.value)}>
+              <select
+                className={sel}
+                value={c.summarizerProvider || ''}
+                onChange={(e) => save({ provider: e.target.value, model: '' })}
+              >
+                {providers.length === 0 && <option value="">No providers configured</option>}
                 {providers.map((p) => (
                   <option key={p.provider} value={p.provider}>
                     {p.provider}{p.ok ? '' : ' (no key set)'}
@@ -398,47 +613,57 @@ export default function Setup() {
             </div>
           </Field>
 
-          {sumKeyed && <KeyEditor provider={sumProvider} present={!!secrets[sumProvider]} onChanged={commitSumKey} autoEdit={!!sumDraft} />}
-
-          {!sumDraft && (
-          <Field label="Model" hint="Type to search the provider's catalog. Any id it supports also works — press Enter to use what you typed.">
-            <ModelPicker value={c.summarizerModel} catalog={models.catalog} loading={models.loading}
-              onRefresh={models.reload}
-              onPick={(id) => save({ provider: c.summarizerProvider, model: id })} />
-          </Field>
+          {c.summarizerProvider && (
+            <Field label="Model" hint="Type to search the provider's catalog. Any model id it supports works — press Enter to use what you typed.">
+              <ModelPicker
+                value={c.summarizerModel}
+                catalog={models.catalog}
+                loading={models.loading}
+                onRefresh={models.reload}
+                onPick={(id) => save({ provider: c.summarizerProvider, model: id })}
+              />
+            </Field>
           )}
 
-          {/* Only providers with a working key are offered: validateSetup rejects
-              a keyless fallback server-side, so listing them would just error. */}
-          {!sumDraft && (
           <Field label="Fallback" hint="Tried only if the primary fails (quota cap, outage, region block). Choose none to disable.">
             <div className="relative">
-              <select className={sel} value={c.summarizerFallbackProvider || 'none'}
-                onChange={(e) => save({ fallbackProvider: e.target.value })}>
+              <select
+                className={sel}
+                value={c.summarizerFallbackProvider || 'none'}
+                onChange={(e) => save({ fallbackProvider: e.target.value, fallbackModel: '' })}
+              >
                 <option value="none">none</option>
-                {providers.filter((p) => p.ok && p.provider !== c.summarizerProvider).map((p) => (
-                  <option key={p.provider} value={p.provider}>{p.provider}</option>
-                ))}
+                {providers
+                  .filter((p) => p.ok && p.provider !== c.summarizerProvider)
+                  .map((p) => (
+                    <option key={p.provider} value={p.provider}>{p.provider}</option>
+                  ))}
               </select>
               <Chevron />
             </div>
-            {c.summarizerFallbackProvider && (
+            {c.summarizerFallbackProvider && c.summarizerFallbackProvider !== 'none' && (
               <div className="mt-2">
-                <ModelPicker value={c.summarizerFallbackModel} catalog={fbModels.catalog} loading={fbModels.loading}
+                <ModelPicker
+                  value={c.summarizerFallbackModel}
+                  catalog={fbModels.catalog}
+                  loading={fbModels.loading}
                   onRefresh={fbModels.reload}
-                  onPick={(id) => save({ fallbackModel: id })} />
+                  onPick={(id) => save({ fallbackModel: id })}
+                />
               </div>
             )}
           </Field>
-          )}
         </Card>
 
         <Card title="Transcription" desc="How spoken audio becomes text.">
-          <Field label="Provider" hint={sttDraft ? 'Add the API key below to switch to this provider.' : (STT_HELP[sttProvider] || '')}>
+          <Field label="Provider" hint={c.sttProvider === 'sidecar' ? 'Local faster-whisper sidecar container' : 'Cloud STT endpoint'}>
             <div className="relative">
-              <select className={sel} value={sttProvider}
-                onChange={(e) => pickStt(e.target.value)}>
-                {(sttProviders || []).map((p) => (
+              <select
+                className={sel}
+                value={c.sttProvider || 'sidecar'}
+                onChange={(e) => save({ sttProvider: e.target.value, sttModel: e.target.value === 'sidecar' ? null : '' })}
+              >
+                {sttProviders.map((p) => (
                   <option key={p.provider} value={p.provider}>
                     {p.label || p.provider}{p.ok ? '' : ' (no key set)'}
                   </option>
@@ -448,15 +673,15 @@ export default function Setup() {
             </div>
           </Field>
 
-          {sttKeyed && (
-            <KeyEditor provider={STT_KEY[sttProvider]} present={!!secrets[STT_KEY[sttProvider]]} onChanged={commitSttKey} autoEdit={!!sttDraft} />
-          )}
-
-          {sttDraft ? null : c.sttProvider === 'sidecar' ? (
+          {c.sttProvider === 'sidecar' ? (
             <>
               <Field label="Whisper model" hint="Larger is more accurate but slower on CPU.">
                 <div className="relative">
-                  <select className={sel} value={c.whisperModel} onChange={(e) => save({ whisperModel: e.target.value })}>
+                  <select
+                    className={sel}
+                    value={c.whisperModel}
+                    onChange={(e) => save({ whisperModel: e.target.value })}
+                  >
                     {WHISPER.map((m) => <option key={m} value={m}>{m}</option>)}
                   </select>
                   <Chevron />
@@ -466,13 +691,14 @@ export default function Setup() {
             </>
           ) : (
             <>
-              <Field label="Model" hint="Cloud transcription model.">
-                <div className="relative">
-                  <select className={sel} value={c.sttModel || (sttModels[0] ?? '')} onChange={(e) => save({ sttModel: e.target.value })}>
-                    {sttModels.map((m) => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                  <Chevron />
-                </div>
+              <Field label="Model" hint="STT model id (e.g. whisper-1 for OpenAI, or your model name).">
+                <input
+                  type="text"
+                  value={c.sttModel || ''}
+                  placeholder="whisper-1"
+                  onChange={(e) => save({ sttModel: e.target.value })}
+                  className="input"
+                />
               </Field>
               {sys?.sidecar?.managed && sys?.sidecar?.running && (
                 <SidecarControl sys={sys} onChanged={refreshSys} />
@@ -508,13 +734,21 @@ export default function Setup() {
               <Chevron />
             </div>
           </Field>
-          <Switch checked={c.useThread} onChange={(e) => save({ useThread: e.target.checked })}
-            label="Post notes in a thread" desc="Keeps the channel tidy by threading each meeting's notes." />
+          <Switch
+            checked={c.useThread}
+            onChange={(e) => save({ useThread: e.target.checked })}
+            label="Post notes in a thread"
+            desc="Keeps the channel tidy by threading each meeting's notes."
+          />
         </Card>
 
         <Card title="Behavior">
-          <Switch checked={c.autoJoin} onChange={(e) => save({ autoJoin: e.target.checked })}
-            label="Auto-join voice" desc="Join automatically when two or more people are in a voice channel." />
+          <Switch
+            checked={c.autoJoin}
+            onChange={(e) => save({ autoJoin: e.target.checked })}
+            label="Auto-join voice"
+            desc="Join automatically when two or more people are in a voice channel."
+          />
         </Card>
       </div>
     </Page>

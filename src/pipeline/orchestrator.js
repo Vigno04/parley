@@ -6,8 +6,8 @@ import { resolveSummaryLanguage } from '../adapters/summarizer/languages.js';
 
 export async function processMeeting(db, meetingId, opts) {
   const meeting = db.getMeeting(meetingId);
-  const transcribe = opts.transcribe || ((tracks, cfg) => transcribeTracks(tracks, cfg));
-  const summarizer = opts.summarizer || getSummarizer(opts.cfg);
+  const transcribe = opts.transcribe || ((tracks, cfg) => transcribeTracks(tracks, cfg, { db, ...(opts.transcribeDeps || {}) }));
+  const summarizer = opts.summarizer || getSummarizer(opts.cfg, db);
 
   db.setMeetingStatus(meetingId, 'processing');
 

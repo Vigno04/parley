@@ -10,8 +10,8 @@ import { askMeeting } from '../adapters/summarizer/ask.js';
 import { getSummarizer } from '../adapters/summarizer/index.js';
 import { buildTranscript, computeTalkTime } from '../pipeline/summarize.js';
 import { resolveSummaryLanguage } from '../adapters/summarizer/languages.js';
-import { listModels, clearModelCache, DEFAULT_MODELS, CATALOG_PROVIDERS } from '../adapters/summarizer/models.js';
-import { secretStatus, setProviderKey, isSecretProvider, connectionStatus, setConnection } from '../store/secrets.js';
+import { listModels, clearModelCache, DEFAULT_MODELS } from '../adapters/summarizer/models.js';
+import { connectionStatus, setConnection } from '../store/secrets.js';
 import { COMMAND_CATALOG } from '../commands/definitions.js';
 import { retryMeeting, retryPlan, RETRYABLE_STATUSES } from '../pipeline/retry.js';
 import { availableSttProviders } from '../adapters/stt/index.js';
@@ -37,29 +37,17 @@ function anyGuildUsesSidecar(db) {
 
 export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
   const r = Router();
-  // The live Discord client may not exist yet (bot starts lazily once creds are
-  // set). Always resolve it fresh from the controller so routes pick it up the
-  // moment the bot connects, without rebuilding the router. `client` is still
-  // accepted directly for tests and the standalone server.
   const liveClient = () => bot?.client || client;
 
-  // Active recordings for a guild, enriched with the voice channel's current
-  // members (so the UI can show who's live). Reads in-memory bot sessions; empty
-  // when no bot is attached (e.g. the standalone read-only server). Sessions
-  // carry a `phase`: 'recording' (capture in progress) or 'processing'
-  // (recording stopped, transcribe/summarize pipeline still running).
   function liveMeetings(guildId) {
     const sessions = (bot && typeof bot.liveMeetings === 'function' ? bot.liveMeetings() : [])
       .filter((s) => s.guildId === guildId);
     const c = liveClient();
     return sessions.map((s) => {
       let attendees = db.listAttendees(s.meetingId).map((a) => ({ id: a.user_id, displayName: a.display_name }));
-      // Once the bot has left the channel (phase 'processing'), the live voice
-      // roster is irrelevant — stick with the stored attendees.
       if (s.phase !== 'processing') {
         const channel = c?.guilds?.cache?.get(s.guildId)?.channels?.cache?.get(s.channelId);
         if (channel?.members) {
-          // Prefer the live voice-channel roster (people who joined mid-meeting).
           const live = [...channel.members.values()].filter((m) => !m.user?.bot)
             .map((m) => ({ id: m.id, displayName: m.displayName }));
           if (live.length) attendees = live;
@@ -82,15 +70,10 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     res.json(db.listRecentRich(req.params.g, 100));
   });
 
-  // In-progress recordings for this guild, enriched with the channel's current
-  // voice members (live attendees) when a Discord client is connected. The bot
-  // holds active sessions in memory, so this is empty unless the bot is running.
   r.get('/guilds/:g/live', (req, res) => {
     res.json({ live: liveMeetings(req.params.g) });
   });
 
-  // Stop a live recording from the dashboard. Finalizes the meeting (transcribe
-  // + summarize + deliver) and disconnects the bot from the voice channel.
   r.post('/guilds/:g/live/:channelId/stop', async (req, res) => {
     if (!bot || typeof bot.stopMeeting !== 'function') {
       return res.status(400).json({ error: 'Live recording is not managed by this server.' });
@@ -104,7 +87,6 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     }
   });
 
-  // Dashboard aggregates — headline stats, talk-time leaderboard, timeline.
   r.get('/guilds/:g/stats', (req, res) => {
     res.json({
       stats: db.guildStats(req.params.g),
@@ -127,10 +109,6 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     });
   });
 
-  // Full export of a meeting for archiving/backup — the whole transcript (not the
-  // 20-line preview /raw shows) plus notes. `?format=md` returns a self-contained
-  // markdown document as a file download; the default returns JSON. Complements
-  // the lack of any retention/backup story.
   r.get('/meetings/:id/export', async (req, res) => {
     const id = Number(req.params.id);
     const meeting = db.getMeeting(id);
@@ -161,9 +139,6 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     res.json({ meeting, summary, attendees, utterances });
   });
 
-  // Retry a failed/stuck meeting: re-summarize if the transcript survived, else
-  // re-transcribe from the saved PCM. Posts to Discord too when a live client
-  // is attached. Returns the new status so the UI can refresh.
   r.post('/meetings/:id/retry', async (req, res) => {
     const id = Number(req.params.id);
     const meeting = db.getMeeting(id);
@@ -194,8 +169,6 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     res.json({ ok: true });
   });
 
-  // Merge sourceIds into the target meeting, then re-summarize the combined
-  // transcript. Sources must share the target's guild.
   r.post('/meetings/:id/merge', requireAdmin, async (req, res) => {
     const targetId = Number(req.params.id);
     const target = db.getMeeting(targetId);
@@ -211,7 +184,6 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
 
     const merged = db.mergeMeetings(targetId, sourceIds);
 
-    // Re-summarize the now-combined transcript and replace the target's notes.
     const utterances = db.listUtterances(targetId).map((u) => ({
       displayName: u.display_name, userId: u.user_id, text: u.text,
       startMs: u.start_ms, endMs: u.end_ms,
@@ -225,13 +197,12 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
       summaryLanguage: resolveSummaryLanguage(cfg),
     };
     try {
-      const summarizer = getSummarizer(cfg);
+      const summarizer = getSummarizer(cfg, db);
       const notes = await summarizer.summarize(transcript, meta);
       db.clearSummary(targetId);
       db.saveSummary(targetId, notes, talktime, summarizer.lastUsed ?? `${cfg.summarizerProvider}:${cfg.summarizerModel || ''}`);
       db.seedTodos(targetId, target.guild_id, notes.actionItems || [], target.started_at);
     } catch (e) {
-      // Data is already merged; surface the summarize failure but don't unwind.
       return res.status(502).json({ error: e.message, merged });
     }
     for (const sid of merged) await rm(audioDir(sid), { recursive: true, force: true }).catch(() => {});
@@ -259,29 +230,32 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     res.json(q ? db.searchUtterances(req.params.g, q) : []);
   });
 
+  // ── Guild config ───────────────────────────────────────────────────────────
   r.get('/guilds/:g/config', (req, res) => {
     const guild = liveClient()?.guilds?.cache?.get(req.params.g);
     const channels = guild
       ? [...guild.channels.cache.filter((c) => c.type === ChannelType.GuildText).values()]
           .map((c) => ({ id: c.id, name: c.name }))
       : [];
+    const provs = availableProviders(db);
+    const secrets = {};
+    for (const p of provs) {
+      secrets[p.provider] = p.ok;
+    }
     res.json({
       config: getGuildConfig(db, req.params.g),
-      providers: availableProviders(env),
-      sttProviders: availableSttProviders(env),
+      providers: provs,
+      sttProviders: availableSttProviders(db, env),
       channels,
+      secrets,
       defaultModels: DEFAULT_MODELS,
-      secrets: secretStatus(env),
     });
   });
 
   r.patch('/guilds/:g/config', async (req, res) => {
-    const result = validateSetup(req.body, env);
+    const result = validateSetup(req.body, db);
     if (!result.ok) return res.status(400).json({ error: result.error });
     const config = setGuildConfig(db, req.params.g, result.patch);
-    // Follow the transcription backend with the local sidecar process: start it
-    // when a guild switches to the sidecar, and stop it when no guild needs it
-    // anymore (switched everything to a cloud API). Best-effort, non-blocking.
     let sidecarStatus = sidecar ? sidecar.status() : null;
     if (sidecar && sidecar.managed() && result.patch.sttProvider !== undefined) {
       try {
@@ -296,55 +270,112 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     res.json({ ok: true, config, sidecar: sidecarStatus });
   });
 
-  // Full model catalog for a provider, queried live (Gemini ListModels, the
-  // OpenAI-compatible /models endpoints, Ollama's installed tags) and cached.
-  // `?refresh=1` bypasses the cache. Degrades to the curated shortlist when the
-  // provider can't be reached — see adapters/summarizer/models.js.
-  r.get('/providers/:provider/models', async (req, res) => {
-    const { provider } = req.params;
-    if (!CATALOG_PROVIDERS.includes(provider)) {
-      return res.status(400).json({ error: `Unknown provider "${provider}". Use one of: ${CATALOG_PROVIDERS.join(', ')}.` });
-    }
-    res.json(await listModels(provider, { env, refresh: req.query.refresh === '1' }));
+  // ── Provider CRUD ─────────────────────────────────────────────────────────
+  r.get('/providers', (_req, res) => {
+    // Never leak api_key to the client — replace with presence boolean.
+    const providers = db.listProviders().map(({ api_key, ...rest }) => ({
+      ...rest,
+      hasKey: !!api_key,
+    }));
+    res.json(providers);
   });
 
-  // Set or clear a provider's API key. Persists to .env and updates the live
-  // config so it takes effect immediately. Never returns the key value.
-  r.put('/providers/:provider/key', requireAdmin, async (req, res) => {
-    const { provider } = req.params;
-    if (!isSecretProvider(provider)) {
-      return res.status(400).json({ error: `Provider "${provider}" has no editable API key.` });
+  r.post('/providers', requireAdmin, (req, res) => {
+    const { id, name, kind, caps, baseUrl, apiKey } = req.body || {};
+    if (!id || !name) return res.status(400).json({ error: 'id and name are required.' });
+    if (!/^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$/.test(id)) {
+      return res.status(400).json({ error: 'id must be lowercase alphanumeric with hyphens/underscores.' });
     }
-    const value = typeof req.body?.key === 'string' ? req.body.key : '';
-    try {
-      const secrets = await setProviderKey(provider, value, { env });
-      // A new key turns a "curated fallback" catalog into a live one; drop the
-      // cached miss so the picker fills immediately.
-      clearModelCache(provider);
-      res.json({ ok: true, secrets, providers: availableProviders(env) });
-    } catch (e) {
-      // Validation failures (control chars in the key) are the client's fault.
-      res.status(400).json({ error: e.message });
+    if (id === 'sidecar' || id === 'none' || id === 'fake') {
+      return res.status(400).json({ error: `"${id}" is reserved.` });
     }
+    const validKinds = ['gemini', 'openai-compatible', 'ollama'];
+    if (kind && !validKinds.includes(kind)) {
+      return res.status(400).json({ error: `kind must be one of: ${validKinds.join(', ')}.` });
+    }
+    const validCaps = ['summarizer', 'stt', 'both'];
+    if (caps && !validCaps.includes(caps)) {
+      return res.status(400).json({ error: `caps must be one of: ${validCaps.join(', ')}.` });
+    }
+    const row = db.upsertProvider({ id, name, kind: kind || 'openai-compatible', caps: caps || 'both', baseUrl, apiKey });
+    const { api_key, ...safe } = row;
+    res.json({ ok: true, provider: { ...safe, hasKey: !!api_key } });
+  });
+
+  r.patch('/providers/:id', requireAdmin, (req, res) => {
+    const existing = db.getProvider(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'provider not found' });
+    const { name, kind, caps, baseUrl, apiKey } = req.body || {};
+    const row = db.upsertProvider({
+      id: req.params.id,
+      name: name ?? existing.name,
+      kind: kind ?? existing.kind,
+      caps: caps ?? existing.caps,
+      baseUrl: baseUrl !== undefined ? baseUrl : existing.base_url,
+      apiKey: apiKey !== undefined ? apiKey : null, // null = keep existing
+    });
+    const { api_key, ...safe } = row;
+    clearModelCache(req.params.id);
+    res.json({ ok: true, provider: { ...safe, hasKey: !!api_key } });
+  });
+
+  r.delete('/providers/:id', requireAdmin, (req, res) => {
+    const existing = db.getProvider(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'provider not found' });
+    db.deleteProvider(req.params.id);
+    clearModelCache(req.params.id);
+    res.json({ ok: true });
+  });
+
+  // Test connectivity: try fetching the provider's model catalog.
+  r.post('/providers/:id/test', requireAdmin, async (req, res) => {
+    const row = db.getProvider(req.params.id);
+    if (!row) return res.status(404).json({ error: 'provider not found' });
+    const result = await listModels(row, { timeoutMs: 8000 });
+    res.json({ ok: result.source === 'live', models: result.models.length, error: result.error });
+  });
+
+  r.put('/providers/:provider/key', requireAdmin, (req, res) => {
+    const p = req.params.provider;
+    const key = req.body?.key ?? '';
+    const existing = db.getProvider(p);
+    if (!existing && !['gemini', 'openai', 'opencode', 'openrouter'].includes(p)) {
+      return res.status(400).json({ error: 'Unknown provider' });
+    }
+    db.upsertProvider({
+      id: p,
+      name: existing?.name || p,
+      kind: existing?.kind || (p === 'gemini' ? 'gemini' : 'openai-compatible'),
+      caps: existing?.caps || 'both',
+      baseUrl: existing?.base_url || null,
+      apiKey: key || null,
+    });
+    res.json({ ok: true });
+  });
+
+  // Live model catalog for a provider.
+  r.get('/providers/:id/models', async (req, res) => {
+    const p = req.params.id;
+    const row = db.getProvider(p) || (['gemini', 'openai', 'opencode', 'openrouter', 'ollama'].includes(p)
+      ? { id: p, kind: p === 'gemini' ? 'gemini' : p === 'ollama' ? 'ollama' : 'openai-compatible' }
+      : null);
+    if (!row) return res.status(400).json({ error: 'provider not found' });
+    res.json(await listModels(row, { env, refresh: req.query.refresh === '1' }));
   });
 
   // ── System / connection ─────────────────────────────────────────────────
-  // The slash-command reference for the dashboard's Commands page.
   r.get('/commands', (_req, res) => {
     res.json({ commands: COMMAND_CATALOG });
   });
 
-  // Overall onboarding + bot connection state for the UI. Never leaks secrets.
   r.get('/system/status', (_req, res) => {
     const c = liveClient();
     res.json({
       connection: connectionStatus(env),
-      providers: availableProviders(env),
-      sttProviders: availableSttProviders(env),
-      secrets: secretStatus(env),
+      providers: availableProviders(db),
+      sttProviders: availableSttProviders(db, env),
       bot: bot
         ? bot.status()
-        // No controller (standalone server): report live client if present.
         : { state: c ? 'ready' : 'stopped', connected: !!c, hasCreds: !!env.discordToken,
             user: c?.user ? { tag: c.user.tag, id: c.user.id } : null, guildCount: c?.guilds?.cache?.size ?? 0 },
       managed: !!bot,
@@ -353,8 +384,6 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     });
   });
 
-  // Save Discord token / client id / STT url (any subset), persist to .env,
-  // apply live, and (re)start the bot if it's managed and creds are present.
   r.put('/system/connection', requireAdmin, async (req, res) => {
     const patch = {};
     for (const k of ['discordToken', 'discordClientId', 'sttUrl']) {
@@ -365,12 +394,10 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     try {
       connection = await setConnection(patch, { env });
     } catch (e) {
-      // Invalid input (bad STT URL, control chars) → 400, not a server error.
       return res.status(400).json({ error: e.message });
     }
     try {
       let botResult = null;
-      // Restart the bot when Discord creds changed and we manage it.
       if (bot && (patch.discordToken !== undefined || patch.discordClientId !== undefined)) {
         botResult = await bot.restart();
       }
@@ -380,7 +407,6 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     }
   });
 
-  // Manually (re)start or stop the bot.
   r.post('/system/bot/:action', requireAdmin, async (req, res) => {
     if (!bot) return res.status(400).json({ error: 'Bot is not managed by this server.' });
     const { action } = req.params;
@@ -395,9 +421,6 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     }
   });
 
-  // Start/stop/restart the local STT sidecar process from the dashboard. The
-  // sidecar is a single global process (transcription backend), so this is not
-  // per-guild. Unmanaged in Docker (separate container) — report that clearly.
   r.post('/system/sidecar/:action', requireAdmin, async (req, res) => {
     if (!sidecar) return res.status(400).json({ error: 'Sidecar is not managed by this server.' });
     const { action } = req.params;
@@ -427,7 +450,7 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     const transcript = db.listUtterances(id).map((u) => `${u.display_name}: ${u.text}`).join('\n');
     try {
       const answer = await askMeeting({
-        cfg: getGuildConfig(db, meeting.guild_id), env, question, transcript,
+        cfg: getGuildConfig(db, meeting.guild_id), db, question, transcript,
         meta: { channelName: meeting.channel_name, date: meeting.started_at,
           attendees: db.listAttendees(id).map((a) => a.display_name) },
       });

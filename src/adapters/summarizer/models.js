@@ -1,69 +1,13 @@
-// Live model catalogs, one per summarizer provider.
+// Live model catalogs, driven by DB-backed provider rows or standard providers.
 //
-// Every provider publishes what it actually serves — Gemini's ListModels, the
-// OpenAI-compatible `/models` endpoints (OpenAI, OpenCode Zen, OpenRouter) and
-// Ollama's `/api/tags` — so the Setup UI and the `/setup` autocomplete can offer
-// the complete list to search through instead of a hand-maintained handful.
-// Results are cached in memory: Discord autocomplete fires on every keystroke
-// and has to answer inside 3 seconds.
+// Every provider exposes what it actually serves — Gemini's ListModels, the
+// OpenAI-compatible `/models` endpoints and Ollama's `/api/tags` — so the Setup
+// UI and the `/setup` autocomplete can offer the complete list to search through
+// instead of a hand-maintained handful. Results are cached in memory: Discord
+// autocomplete fires on every keystroke and has to answer inside 3 seconds.
 //
 // A dead endpoint, missing key or timeout degrades to CURATED_MODELS rather
 // than showing an empty picker; the model field stays free text either way.
-
-import { config as envConfig } from '../../config/env.js';
-
-// The model a provider gets when it's selected without naming one. Single
-// source for createAdapter(), /setup and the dashboard.
-export const DEFAULT_MODELS = {
-  gemini: 'gemini-2.5-flash',
-  openai: 'gpt-4o-mini',
-  ollama: 'llama3',
-  opencode: 'glm-5.3',
-  openrouter: 'openai/gpt-4o-mini',
-};
-
-// Hand-picked shortlist per provider: shown first in an unfiltered picker, and
-// used verbatim when the live catalog can't be reached.
-export const CURATED_MODELS = {
-  gemini: [
-    'gemini-2.5-flash',
-    'gemini-2.5-pro',
-    'gemini-2.5-flash-lite',
-    'gemini-flash-latest',
-    'gemini-pro-latest',
-  ],
-  openai: [
-    'gpt-4o-mini',
-    'gpt-4o',
-    'gpt-4.1',
-    'gpt-4.1-mini',
-    'o3-mini',
-  ],
-  // OpenCode Zen Go gateway — bare ids, no `opencode/` prefix.
-  opencode: [
-    'glm-5.3',
-    'glm-5.3-flash',
-    'kimi-k3',
-    'minimax-m3',
-    'qwen3.8-max',
-  ],
-  // OpenRouter ids are vendor-namespaced.
-  openrouter: [
-    'openai/gpt-4o-mini',
-    'anthropic/claude-sonnet-4',
-    'google/gemini-2.5-flash',
-    'deepseek/deepseek-chat',
-    'meta-llama/llama-3.3-70b-instruct',
-  ],
-  ollama: [
-    'llama3.1',
-    'llama3',
-    'qwen2.5',
-    'mistral',
-    'gemma2',
-    'phi3',
-  ],
-};
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -77,12 +21,30 @@ const GEMINI_NON_TEXT = /embedding|^aqa$|^imagen|^veo-|^lyria|nano-banana|-tts$|
 const OPENAI_TEXT = /^(gpt|o[1-9]|chatgpt|codex)/i;
 const OPENAI_NON_TEXT = /transcribe|tts|audio|realtime|whisper|embedding|moderation|image|dall-e|sora|search|computer-use/i;
 
+export const CURATED_MODELS = {
+  gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+  openai: ['gpt-4o', 'gpt-4o-mini'],
+  opencode: ['glm-5.3', 'kimi-k3', 'kimi-k2.6'],
+  openrouter: ['openai/gpt-4o-mini', 'google/gemini-2.5-flash', 'anthropic/claude-3.5-sonnet'],
+  ollama: ['llama3', 'mistral', 'qwen2.5'],
+};
+
+export const DEFAULT_MODELS = {
+  gemini: 'gemini-2.5-flash',
+  openai: 'gpt-4o',
+  opencode: 'glm-5.3',
+  openrouter: 'openai/gpt-4o-mini',
+  ollama: 'llama3',
+};
+
+export const CATALOG_PROVIDERS = Object.keys(CURATED_MODELS);
+
 const CACHE_TTL_MS = 10 * 60 * 1000; // live catalogs barely change
 const ERROR_TTL_MS = 30 * 1000;      // don't hammer a dead endpoint per keystroke
-const cache = new Map(); // provider -> { until, payload }
+const cache = new Map(); // provider id -> { until, payload }
 
-export function clearModelCache(provider) {
-  if (provider) cache.delete(provider);
+export function clearModelCache(providerId) {
+  if (providerId) cache.delete(providerId);
   else cache.clear();
 }
 
@@ -111,14 +73,13 @@ async function getJson(url, { headers = {}, timeoutMs, fetchImpl }) {
 
 const entry = (id, label, context) => ({ id, label: label || id, context: Number.isFinite(context) ? context : null });
 
-async function fetchGemini({ env, fetchImpl, timeoutMs }) {
-  const key = env.gemini?.apiKey;
-  if (!key) throw new Error('GEMINI_API_KEY is not set');
+async function fetchGemini({ apiKey, fetchImpl, timeoutMs }) {
+  if (!apiKey) throw new Error('GEMINI_API_KEY is not set');
   const models = [];
   let pageToken = '';
   // ListModels pages at 50 by default; ask for the max and follow the cursor.
   for (let page = 0; page < 5; page += 1) {
-    const url = `${GEMINI_BASE}/models?key=${encodeURIComponent(key)}&pageSize=200`
+    const url = `${GEMINI_BASE}/models?key=${encodeURIComponent(apiKey)}&pageSize=200`
       + (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '');
     const data = await getJson(url, { timeoutMs, fetchImpl });
     for (const m of data?.models || []) {
@@ -134,75 +95,41 @@ async function fetchGemini({ env, fetchImpl, timeoutMs }) {
 }
 
 // Shared shape for the OpenAI-compatible `/models` listings.
-async function fetchOpenAICompatible({ baseUrl, apiKey, fetchImpl, timeoutMs }) {
+async function fetchOpenAICompatible({ baseUrl, apiKey, fetchImpl, timeoutMs, isOpenAI = false }) {
+  if (!baseUrl) throw new Error('Base URL is not set');
   const data = await getJson(`${baseUrl.replace(/\/$/, '')}/models`, {
     headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
     timeoutMs,
     fetchImpl,
   });
-  return (data?.data || []).map((m) => m?.id).filter((id) => typeof id === 'string' && id);
-}
-
-async function fetchOpenAI({ env, fetchImpl, timeoutMs }) {
-  if (!env.openai?.apiKey) throw new Error('OPENAI_API_KEY is not set');
-  const ids = await fetchOpenAICompatible({
-    baseUrl: env.openai.baseUrl, apiKey: env.openai.apiKey, fetchImpl, timeoutMs,
-  });
-  const chat = ids.filter((id) => OPENAI_TEXT.test(id) && !OPENAI_NON_TEXT.test(id));
-  // OPENAI_BASE_URL often points at a compatible gateway (LM Studio, vLLM, a
-  // proxy) whose ids the heuristic doesn't recognise — show everything rather
-  // than nothing.
-  return (chat.length ? chat : ids).map((id) => entry(id));
-}
-
-async function fetchOpenCode({ env, fetchImpl, timeoutMs }) {
-  if (!env.opencode?.apiKey) throw new Error('OPENCODE_API_KEY is not set');
-  const ids = await fetchOpenAICompatible({
-    baseUrl: env.opencode.baseUrl, apiKey: env.opencode.apiKey, fetchImpl, timeoutMs,
-  });
-  return ids.map((id) => entry(id));
-}
-
-async function fetchOpenRouter({ env, fetchImpl, timeoutMs }) {
-  // OpenRouter's catalog is public; the key only matters for inference.
-  const data = await getJson(`${env.openrouter.baseUrl.replace(/\/$/, '')}/models`, {
-    headers: env.openrouter?.apiKey ? { authorization: `Bearer ${env.openrouter.apiKey}` } : {},
-    timeoutMs,
-    fetchImpl,
-  });
+  const rawList = data?.data || [];
   const models = [];
-  for (const m of data?.data || []) {
+  for (const m of rawList) {
     if (!m?.id) continue;
     const out = m.architecture?.output_modalities;
-    // Image/audio-only endpoints can't return notes.
     if (Array.isArray(out) && out.length && !out.includes('text')) continue;
+    if (isOpenAI && (!OPENAI_TEXT.test(m.id) || OPENAI_NON_TEXT.test(m.id))) continue;
     models.push(entry(m.id, m.name, m.context_length));
+  }
+  // Fallback for OpenAI compatible gateways with custom model names
+  if (isOpenAI && models.length === 0) {
+    for (const m of rawList) {
+      if (m?.id) models.push(entry(m.id, m.name, m.context_length));
+    }
   }
   return models;
 }
 
-async function fetchOllama({ env, fetchImpl, timeoutMs }) {
-  const url = env.ollama?.url;
-  if (!url) throw new Error('OLLAMA_URL is not set');
-  const data = await getJson(`${url.replace(/\/$/, '')}/api/tags`, { timeoutMs, fetchImpl });
+async function fetchOllama({ baseUrl, fetchImpl, timeoutMs }) {
+  if (!baseUrl) throw new Error('OLLAMA_URL is not set');
+  const data = await getJson(`${baseUrl.replace(/\/$/, '')}/api/tags`, { timeoutMs, fetchImpl });
   return (data?.models || [])
     .map((m) => m?.name)
     .filter((name) => typeof name === 'string' && name)
     .map((name) => entry(name));
 }
 
-const FETCHERS = {
-  gemini: fetchGemini,
-  openai: fetchOpenAI,
-  opencode: fetchOpenCode,
-  openrouter: fetchOpenRouter,
-  ollama: fetchOllama,
-};
-
-export const CATALOG_PROVIDERS = Object.keys(FETCHERS);
-
-// Curated shortlist first (in its own order), then everything else A→Z. That
-// ordering is what an unfiltered picker and the empty-query autocomplete show.
+// Curated shortlist first (in its own order), then everything else A→Z.
 function order(models, curated) {
   const rank = new Map(curated.map((id, i) => [id, i]));
   return models.sort((a, b) => {
@@ -227,28 +154,85 @@ function dedupe(models) {
 /**
  * The catalog for one provider.
  *
- * Returns `{ provider, models: [{ id, label, context }], curated, default,
- * source, error, fetchedAt }` where `source` is 'live' when the provider
- * answered and 'curated' when we fell back to the static shortlist.
+ * `provider` can be a DB row ({ id, kind, base_url, api_key }) or a provider slug string.
  */
 export async function listModels(provider, {
-  env = envConfig,
+  env = {},
   fetchImpl = fetch,
   timeoutMs = 4000,
   refresh = false,
   now = Date.now,
 } = {}) {
-  const curated = CURATED_MODELS[provider] || [];
-  const base = { provider, curated, default: DEFAULT_MODELS[provider] || null };
-  const fetcher = FETCHERS[provider];
-  if (!fetcher) return { ...base, models: [], source: 'curated', error: `Unknown provider: ${provider}`, fetchedAt: now() };
+  let providerId;
+  let kind = 'openai-compatible';
+  let base_url = '';
+  let api_key = null;
 
-  const hit = cache.get(provider);
+  if (typeof provider === 'string') {
+    providerId = provider;
+    if (providerId === 'gemini') {
+      kind = 'gemini';
+      api_key = env.gemini?.apiKey;
+    } else if (providerId === 'ollama') {
+      kind = 'ollama';
+      base_url = env.ollama?.url || 'http://127.0.0.1:11434';
+    } else if (providerId === 'openai') {
+      kind = 'openai-compatible';
+      base_url = env.openai?.baseUrl || 'https://api.openai.com/v1';
+      api_key = env.openai?.apiKey;
+    } else if (providerId === 'opencode') {
+      kind = 'openai-compatible';
+      base_url = env.opencode?.baseUrl || 'https://opencode.ai/zen/go/v1';
+      api_key = env.opencode?.apiKey;
+    } else if (providerId === 'openrouter') {
+      kind = 'openai-compatible';
+      base_url = env.openrouter?.baseUrl || 'https://openrouter.ai/api/v1';
+      api_key = env.openrouter?.apiKey;
+    } else if (env[providerId]) {
+      base_url = env[providerId].baseUrl || env[providerId].url || '';
+      api_key = env[providerId].apiKey || null;
+    }
+  } else if (provider && typeof provider === 'object') {
+    providerId = provider.id;
+    kind = provider.kind || 'openai-compatible';
+    base_url = provider.base_url || provider.baseUrl || (env[providerId]?.baseUrl || env[providerId]?.url || '');
+    api_key = provider.api_key || provider.apiKey || (env[providerId]?.apiKey || null);
+    if (!base_url && providerId === 'openai') base_url = 'https://api.openai.com/v1';
+    if (!base_url && providerId === 'openrouter') base_url = 'https://openrouter.ai/api/v1';
+    if (!base_url && providerId === 'opencode') base_url = 'https://opencode.ai/zen/go/v1';
+    if (!base_url && providerId === 'ollama') base_url = 'http://127.0.0.1:11434';
+  }
+
+  if (!providerId) return { provider: null, models: [], source: 'curated', error: 'Provider not found', fetchedAt: now() };
+
+  const curated = CURATED_MODELS[providerId] || [];
+  const base = { provider: providerId, curated, default: DEFAULT_MODELS[providerId] || null };
+
+  const hit = cache.get(providerId);
   if (!refresh && hit && hit.until > now()) return hit.payload;
 
   let payload;
   try {
-    const models = dedupe(await fetcher({ env, fetchImpl, timeoutMs }));
+    let models;
+    switch (kind) {
+      case 'gemini':
+        models = await fetchGemini({ apiKey: api_key, fetchImpl, timeoutMs });
+        break;
+      case 'ollama':
+        models = await fetchOllama({ baseUrl: base_url, fetchImpl, timeoutMs });
+        break;
+      case 'openai-compatible':
+      default:
+        models = await fetchOpenAICompatible({
+          baseUrl: base_url,
+          apiKey: api_key,
+          fetchImpl,
+          timeoutMs,
+          isOpenAI: providerId === 'openai',
+        });
+        break;
+    }
+    models = dedupe(models);
     if (!models.length) throw new Error('provider returned no models');
     payload = { ...base, models: order(models, curated), source: 'live', error: null, fetchedAt: now() };
   } catch (err) {
@@ -260,7 +244,7 @@ export async function listModels(provider, {
       fetchedAt: now(),
     };
   }
-  cache.set(provider, { until: now() + (payload.source === 'live' ? CACHE_TTL_MS : ERROR_TTL_MS), payload });
+  cache.set(providerId, { until: now() + (payload.source === 'live' ? CACHE_TTL_MS : ERROR_TTL_MS), payload });
   return payload;
 }
 

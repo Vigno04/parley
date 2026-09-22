@@ -57,6 +57,15 @@ CREATE INDEX IF NOT EXISTS utterances_meeting ON utterances(meeting_id);
 CREATE INDEX IF NOT EXISTS todos_meeting ON todos(meeting_id);
 CREATE INDEX IF NOT EXISTS todos_guild ON todos(guild_id);
 CREATE INDEX IF NOT EXISTS meetings_guild ON meetings(guild_id);
+CREATE TABLE IF NOT EXISTS providers (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  kind       TEXT NOT NULL DEFAULT 'openai-compatible',
+  caps       TEXT NOT NULL DEFAULT 'both',
+  base_url   TEXT,
+  api_key    TEXT,
+  created_at TEXT NOT NULL
+);
 `;
 
 export function openDb(path) {
@@ -464,6 +473,28 @@ export function openDb(path) {
         out.push({ date: key, count: counts.get(key) || 0 });
       }
       return out;
+    },
+
+    // ── Provider registry ──────────────────────────────────────────────────
+    listProviders() {
+      return sql.prepare(`SELECT * FROM providers ORDER BY created_at`).all();
+    },
+    getProvider(id) {
+      return sql.prepare(`SELECT * FROM providers WHERE id = ?`).get(id) || null;
+    },
+    upsertProvider({ id, name, kind, caps, baseUrl, apiKey }) {
+      sql.prepare(
+        `INSERT INTO providers (id, name, kind, caps, base_url, api_key, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name, kind = excluded.kind, caps = excluded.caps,
+           base_url = excluded.base_url,
+           api_key = CASE WHEN excluded.api_key IS NULL THEN providers.api_key ELSE excluded.api_key END`
+      ).run(id, name, kind || 'openai-compatible', caps || 'both', baseUrl || null, apiKey || null, new Date().toISOString());
+      return this.getProvider(id);
+    },
+    deleteProvider(id) {
+      sql.prepare(`DELETE FROM providers WHERE id = ?`).run(id);
     },
   };
 }

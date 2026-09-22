@@ -57,7 +57,7 @@ export function startBot({ db, audioRoot }) {
         const result = await processMeeting(db, meetingId, {
           tracks,
           cfg,
-          summarizer: getSummarizer(cfg),
+          summarizer: getSummarizer(cfg, db),
           deliver: async (notes, talktime) => postNotes({ client, meeting, cfg, notes, talktime }),
         });
         // Success: delete the meeting's audio. On failure we keep the PCM for manual retry.
@@ -373,7 +373,7 @@ export function startBot({ db, audioRoot }) {
           language: interaction.options.getString('language') ?? undefined,
           summary_language: interaction.options.getString('summary_language') ?? undefined,
         };
-        const result = validateSetup(input, config);
+        const result = validateSetup(input, db);
         if (!result.ok) return interaction.reply({ content: `❌ ${result.error}`, ephemeral: true });
         const merged = setGuildConfig(db, guild.id, result.patch);
         return interaction.reply({ content: `✅ Config updated:\n\`\`\`json\n${JSON.stringify(merged, null, 2)}\n\`\`\``, ephemeral: true });

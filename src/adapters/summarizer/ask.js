@@ -12,8 +12,8 @@ ${transcript}
 Question: ${question}`;
 }
 
-export async function askMeeting({ cfg, env, question, transcript, meta }) {
-  const s = getSummarizer(cfg, env);
+export async function askMeeting({ cfg, db, question, transcript, meta }) {
+  const s = getSummarizer(cfg, db);
   if (typeof s.ask !== 'function') throw new Error(`Provider ${cfg.summarizerProvider} does not support Q&A`);
   return s.ask(buildAskPrompt(question, transcript, meta));
 }

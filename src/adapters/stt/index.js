@@ -2,64 +2,104 @@ import { config as envConfig } from '../../config/env.js';
 import { createSidecarSTT } from './sidecar.js';
 import { createOpenAICompatibleSTT } from './openai-compatible.js';
 
-// Pluggable speech-to-text, mirroring the summarizer adapter layout. Every
-// provider resolves to a uniform `transcribe(filePath, { model, language })`
-// returning `{ text, words: [{ word, start, end }] }`.
-//
-//   • sidecar — local faster-whisper container (default; fully offline, free)
-//   • openai  — OpenAI / any OpenAI-compatible audio endpoint
-//
-// Cloud providers let users skip running the Python sidecar entirely.
-
+export const WHISPER_MODELS = ['tiny', 'base', 'small', 'medium', 'large-v3', 'large-v3-turbo'];
 export const STT_PROVIDERS = ['sidecar', 'openai'];
-
-// Selectable models per provider, with the default first. The sidecar's models
-// are faster-whisper sizes (downloaded on demand); cloud models are API IDs.
 export const STT_MODELS = {
-  sidecar: ['tiny', 'base', 'small', 'medium', 'large-v3', 'large-v3-turbo'],
+  sidecar: WHISPER_MODELS,
   openai: ['whisper-1', 'gpt-4o-transcribe', 'gpt-4o-mini-transcribe'],
 };
 
-export const STT_PROVIDER_LABELS = {
-  sidecar: 'Local sidecar (faster-whisper)',
-  openai: 'OpenAI (cloud)',
-};
-
-// The model a given config should use: cloud providers read `sttModel`
-// (falling back to the provider default); the sidecar keeps using `whisperModel`
-// so existing configs and the `/setup whisper_model` flow are untouched.
 export function resolveSttModel(cfg, provider = cfg?.sttProvider) {
-  if (provider === 'sidecar' || !provider) return cfg?.whisperModel || STT_MODELS.sidecar[0];
-  return cfg?.sttModel || STT_MODELS[provider]?.[0];
+  if (provider === 'sidecar' || !provider) return cfg?.whisperModel || WHISPER_MODELS[0];
+  return cfg?.sttModel || 'whisper-1';
 }
 
-// Build the transcribe function for a guild config. `deps` is forwarded to the
-// underlying adapter (used by tests to inject fetch/readFile).
-export function getSTT(cfg = {}, env = envConfig, deps = {}) {
-  const provider = cfg.sttProvider || 'sidecar';
-  switch (provider) {
-    case 'sidecar':
-      return createSidecarSTT({ baseUrl: env.sttUrl }, deps);
-    case 'openai':
-      return createOpenAICompatibleSTT({ baseUrl: env.openai?.baseUrl, apiKey: env.openai?.apiKey, label: 'OpenAI STT' }, deps);
-    default:
-      throw new Error(`Unknown STT provider: ${provider}`);
+// Build the transcribe function for a guild config. Supports both:
+//   getSTT(cfg, db, env, deps) — new DB-backed signature
+//   getSTT(cfg, env, deps)     — legacy / test signature
+export function getSTT(cfg = {}, dbOrEnv = null, envOrDeps = envConfig, deps = {}) {
+  let db = null;
+  let effectiveEnv = envConfig;
+  let effectiveDeps = deps;
+
+  if (dbOrEnv && typeof dbOrEnv.getProvider === 'function') {
+    db = dbOrEnv;
+    effectiveEnv = envOrDeps || envConfig;
+    effectiveDeps = deps || {};
+  } else {
+    effectiveEnv = dbOrEnv || envConfig;
+    effectiveDeps = envOrDeps || {};
   }
+
+  const provider = cfg.sttProvider || 'sidecar';
+  if (provider === 'sidecar') {
+    const sttUrl = effectiveEnv?.sttUrl || effectiveEnv?.stt?.url || 'http://127.0.0.1:8000';
+    return createSidecarSTT({ baseUrl: sttUrl }, effectiveDeps);
+  }
+  if (provider === 'openai') {
+    const apiKey = effectiveEnv?.openai?.apiKey ?? (db ? db.getProvider('openai')?.api_key : null);
+    const baseUrl = effectiveEnv?.openai?.baseUrl || (db ? db.getProvider('openai')?.base_url : null) || 'https://api.openai.com/v1';
+    return createOpenAICompatibleSTT({ baseUrl, apiKey, label: 'OpenAI STT' }, effectiveDeps);
+  }
+  if (!db) {
+    throw new Error(`Unknown STT provider: ${provider}`);
+  }
+  const row = db.getProvider(provider);
+  if (!row) throw new Error(`Unknown STT provider: ${provider}`);
+  return createOpenAICompatibleSTT({ baseUrl: row.base_url, apiKey: row.api_key, label: row.name || provider }, effectiveDeps);
 }
 
-// Whether a provider is usable right now (key/url present). Powers UI badges and
-// the validation that blocks selecting a provider with no credentials.
-export function sttProviderReady(provider, env = envConfig) {
-  if (provider === 'sidecar') return { ok: !!env.sttUrl, missing: 'STT_URL' };
-  if (provider === 'openai') return { ok: !!env.openai?.apiKey, missing: 'OPENAI_API_KEY' };
-  return { ok: false, missing: null };
+// Whether a provider is usable right now.
+export function sttProviderReady(provider, dbOrEnv = null, env = envConfig) {
+  if (provider === 'sidecar') {
+    const url = dbOrEnv?.sttUrl || env?.sttUrl || process.env.STT_URL || 'http://127.0.0.1:8000';
+    return { ok: !!url, missing: url ? null : 'STT_URL' };
+  }
+  if (provider === 'openai') {
+    const key = (dbOrEnv?.getProvider ? dbOrEnv.getProvider('openai')?.api_key : null)
+      || dbOrEnv?.openai?.apiKey
+      || env?.openai?.apiKey
+      || process.env.OPENAI_API_KEY;
+    return { ok: !!key, missing: key ? null : 'OPENAI_API_KEY' };
+  }
+  if (!dbOrEnv || typeof dbOrEnv.getProvider !== 'function') {
+    return { ok: false, missing: 'provider not found' };
+  }
+  const row = dbOrEnv.getProvider(provider);
+  if (!row) return { ok: false, missing: 'provider not found' };
+  return { ok: !!row.base_url, missing: row.base_url ? null : 'base_url' };
 }
 
-export function availableSttProviders(env = envConfig) {
-  return STT_PROVIDERS.map((provider) => ({
-    provider,
-    label: STT_PROVIDER_LABELS[provider],
-    models: STT_MODELS[provider],
-    ...sttProviderReady(provider, env),
-  }));
+// List available STT providers: always includes the built-in sidecar, plus any
+// DB providers whose caps include 'stt' or 'both' (and openai by default).
+export function availableSttProviders(dbOrEnv = null, env = envConfig) {
+  const isDb = dbOrEnv && typeof dbOrEnv.listProviders === 'function';
+  const out = [
+    {
+      provider: 'sidecar',
+      label: 'Local sidecar (faster-whisper)',
+      models: WHISPER_MODELS,
+      ...sttProviderReady('sidecar', dbOrEnv, env),
+    },
+  ];
+  if (isDb) {
+    for (const row of dbOrEnv.listProviders()) {
+      if (row.caps !== 'stt' && row.caps !== 'both') continue;
+      out.push({
+        provider: row.id,
+        label: row.name || row.id,
+        models: [],
+        ...sttProviderReady(row.id, dbOrEnv, env),
+      });
+    }
+  }
+  if (!out.some((p) => p.provider === 'openai')) {
+    out.push({
+      provider: 'openai',
+      label: 'OpenAI (cloud)',
+      models: STT_MODELS.openai,
+      ...sttProviderReady('openai', dbOrEnv, env),
+    });
+  }
+  return out;
 }

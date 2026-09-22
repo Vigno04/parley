@@ -43,5 +43,5 @@ test('getSummarizer returns fake when provider is fake', () => {
 });
 
 test('getSummarizer throws on unknown provider', () => {
-  assert.throws(() => getSummarizer({ summarizerProvider: 'nope' }), /Unknown summarizer/);
+  assert.throws(() => getSummarizer({ summarizerProvider: 'nope' }, { getProvider: () => null }), /not found/i);
 });

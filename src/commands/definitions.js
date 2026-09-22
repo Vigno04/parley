@@ -1,12 +1,6 @@
 import { SlashCommandBuilder, ChannelType, PermissionFlagsBits } from 'discord.js';
-import { SUPPORTED_PROVIDERS } from '../adapters/summarizer/index.js';
 import { WHISPER_MODELS } from './setup-logic.js';
-import { STT_PROVIDERS, STT_MODELS } from '../adapters/stt/index.js';
 import { LANGUAGES } from '../adapters/summarizer/languages.js';
-
-// Discord caps a string option at 25 choices; the cloud STT model ids comfortably
-// fit. Flatten every provider's models into one choice list for `stt_model`.
-const STT_MODEL_CHOICES = [...new Set(Object.values(STT_MODELS).flat())];
 
 export function buildCommands() {
   return [
@@ -24,16 +18,13 @@ export function buildCommands() {
       .addStringOption((o) => o.setName('keyword').setDescription('Word or phrase').setRequired(true)),
     new SlashCommandBuilder().setName('setup').setDescription('Configure the bot (admin only)')
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-      .addStringOption((o) => o.setName('provider').setDescription('Summarizer provider')
-        .addChoices(...SUPPORTED_PROVIDERS.map((p) => ({ name: p, value: p }))))
+      // Provider and model options use autocomplete — choices come from DB at runtime.
+      .addStringOption((o) => o.setName('provider').setDescription('Summarizer provider').setAutocomplete(true))
       .addStringOption((o) => o.setName('model').setDescription('Summarizer model — type to search the provider catalog').setAutocomplete(true))
-      .addStringOption((o) => o.setName('fallback_provider').setDescription('Backup summarizer used only if the primary fails')
-        .addChoices(...SUPPORTED_PROVIDERS.map((p) => ({ name: p, value: p })), { name: 'none', value: 'none' }))
+      .addStringOption((o) => o.setName('fallback_provider').setDescription('Backup summarizer used only if the primary fails').setAutocomplete(true))
       .addStringOption((o) => o.setName('fallback_model').setDescription('Backup summarizer model — type to search the provider catalog').setAutocomplete(true))
-      .addStringOption((o) => o.setName('stt_provider').setDescription('Speech-to-text provider')
-        .addChoices(...STT_PROVIDERS.map((p) => ({ name: p, value: p }))))
-      .addStringOption((o) => o.setName('stt_model').setDescription('Cloud STT model (OpenAI)')
-        .addChoices(...STT_MODEL_CHOICES.map((m) => ({ name: m, value: m }))))
+      .addStringOption((o) => o.setName('stt_provider').setDescription('Speech-to-text provider').setAutocomplete(true))
+      .addStringOption((o) => o.setName('stt_model').setDescription('STT model').setAutocomplete(true))
       .addStringOption((o) => o.setName('whisper_model').setDescription('Whisper model size (local sidecar)')
         .addChoices(...WHISPER_MODELS.map((m) => ({ name: m, value: m }))))
       .addChannelOption((o) => o.setName('notes_channel').setDescription('Where to post notes').addChannelTypes(ChannelType.GuildText))
@@ -79,6 +70,6 @@ export const COMMAND_CATALOG = [
   { name: 'setup', category: 'Configuration', admin: true,
     args: '[provider] [model] [fallback_provider] [fallback_model] [stt_provider] [stt_model] [whisper_model] [notes_channel] [thread] [autojoin] [language] [summary_language]',
     summary: 'Configure the bot for this server (admin only).',
-    detail: 'Set the summarizer provider/model, an optional fallback summarizer used only when the primary fails (set fallback_provider to "none" to disable), the speech-to-text provider (local sidecar or OpenAI) and model, notes channel, threading, auto-join, and languages. You can also do all of this from this dashboard under Settings.' },
+    detail: 'Set the summarizer provider/model, an optional fallback summarizer, the speech-to-text provider and model, notes channel, threading, auto-join, and languages. Providers are added from the web dashboard.' },
 ];
 ;

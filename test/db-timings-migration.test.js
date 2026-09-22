@@ -54,7 +54,8 @@ test('openDb migrates an existing db created before timings_json existed', () =>
     const updated = db.getSummary(meetingId);
     assert.equal(updated.timings.transcribeMs, 10);
     assert.equal(updated.timings.summarizeMs, 5);
+    db.sql.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* Windows lock */ }
   }
 });

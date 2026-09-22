@@ -19,30 +19,14 @@ test('setup command exposes provider/model/fallback/stt/whisper/thread/autojoin/
   assert.deepEqual(names, ['autojoin', 'fallback_model', 'fallback_provider', 'language', 'model', 'notes_channel', 'provider', 'stt_model', 'stt_provider', 'summary_language', 'thread', 'whisper_model']);
 });
 
-test('setup provider option includes openrouter', () => {
+test('setup provider and model options are autocompleted, not choice-limited', () => {
   const setup = commandsJSON().find((c) => c.name === 'setup');
-  const provider = setup.options.find((o) => o.name === 'provider');
-  const values = provider.choices.map((c) => c.value);
-  assert.ok(values.includes('openrouter'));
-  assert.ok(values.includes('opencode'));
-});
-
-test('model options are autocompleted, not choice-limited', () => {
-  const setup = commandsJSON().find((c) => c.name === 'setup');
-  for (const name of ['model', 'fallback_model']) {
+  for (const name of ['provider', 'model', 'fallback_provider', 'fallback_model', 'stt_provider', 'stt_model']) {
     const opt = setup.options.find((o) => o.name === name);
     assert.equal(opt.autocomplete, true, `${name} autocompletes`);
     // Discord rejects an option that declares both choices and autocomplete.
     assert.ok(!opt.choices?.length, `${name} has no static choices`);
   }
-});
-
-test('stt_provider option offers sidecar and openai choices', () => {
-  const setup = commandsJSON().find((c) => c.name === 'setup');
-  const stt = setup.options.find((o) => o.name === 'stt_provider');
-  const values = stt.choices.map((c) => c.value);
-  assert.ok(values.includes('sidecar'));
-  assert.ok(values.includes('openai'));
 });
 
 test('language option offers a German choice and auto', () => {

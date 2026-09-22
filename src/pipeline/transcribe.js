@@ -15,7 +15,7 @@ export async function transcribeTracks(tracks, cfg = {}, deps = {}) {
   const convert = deps.convert || convertPcmToWav;
   // Resolve the configured STT provider (sidecar | openai) once per
   // meeting. The provider default can be overridden via deps.stt in tests.
-  const transcribe = getSTT(cfg, deps.env, deps.sttDeps);
+  const transcribe = deps.transcribe || (!deps.stt ? getSTT(cfg, deps.db, deps.env, deps.sttDeps) : null);
   const model = resolveSttModel(cfg);
   const stt = deps.stt || ((wav) => transcribe(wav, { model, language: cfg.language }));
   const cleanup = deps.cleanup || (async (p) => { try { await unlink(p); } catch { /* ignore */ } });

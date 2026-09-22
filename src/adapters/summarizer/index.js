@@ -6,35 +6,75 @@ import { OpenCodeSummarizer } from './opencode.js';
 import { OpenRouterSummarizer } from './openrouter.js';
 import { FallbackSummarizer } from './fallback.js';
 import { DEFAULT_MODELS } from './models.js';
-import { config as envConfig } from '../../config/env.js';
 
-export function createAdapter(provider, model, env = envConfig) {
-  switch (provider) {
-    case 'fake': return new FakeSummarizer();
-    case 'gemini': return new GeminiSummarizer(model, env.gemini.apiKey);
-    case 'ollama': return new OllamaSummarizer(model, env.ollama.url);
-    case 'openai': return new OpenAISummarizer(model, env.openai.baseUrl, env.openai.apiKey);
-    case 'opencode': return new OpenCodeSummarizer(model || DEFAULT_MODELS.opencode, env.opencode.baseUrl, env.opencode.apiKey);
-    case 'openrouter': return new OpenRouterSummarizer(model || DEFAULT_MODELS.openrouter, env.openrouter.baseUrl, env.openrouter.apiKey);
-    default: throw new Error(`Unknown summarizer provider: ${provider}`);
+// Build a summarizer from a provider DB row ({ id, kind, base_url, api_key, … })
+// and a model id. The `kind` selects the adapter class.
+export function createAdapter(providerRow, model) {
+  if (!providerRow) throw new Error('No provider configured.');
+  if (providerRow.id === 'fake' || providerRow.kind === 'fake') return new FakeSummarizer();
+  const { id, kind, base_url, api_key } = providerRow;
+  const resolvedModel = model || DEFAULT_MODELS[id] || '';
+
+  if (id === 'opencode') return new OpenCodeSummarizer(resolvedModel, base_url || 'https://opencode.ai/zen/go/v1', api_key);
+  if (id === 'openrouter') return new OpenRouterSummarizer(resolvedModel, base_url || 'https://openrouter.ai/api/v1', api_key);
+
+  switch (kind) {
+    case 'gemini':
+      return new GeminiSummarizer(resolvedModel, api_key);
+    case 'ollama':
+      return new OllamaSummarizer(resolvedModel, base_url || 'http://127.0.0.1:11434');
+    case 'openai-compatible':
+    default:
+      return new OpenAISummarizer(resolvedModel, base_url || 'https://api.openai.com/v1', api_key);
   }
 }
 
-const label = (provider, model) => `${provider}:${model || ''}`;
+const label = (id, model) => `${id}:${model || ''}`;
 
-export function getSummarizer(cfg, env = envConfig) {
-  const primary = createAdapter(cfg.summarizerProvider, cfg.summarizerModel, env);
+// Resolve a guild config to a working summarizer. Looks up the provider row
+// from the DB (with backward-compatible env fallback).
+export function getSummarizer(cfg = {}, dbOrEnv = null) {
+  const providerId = cfg?.summarizerProvider;
+  if (providerId === 'fake') return new FakeSummarizer();
+
+  let row;
+  if (dbOrEnv && typeof dbOrEnv.getProvider === 'function') {
+    row = dbOrEnv.getProvider(providerId);
+    if (!row) throw new Error(`Provider "${providerId}" not found. Add it from the dashboard.`);
+  } else {
+    // env fallback
+    const env = dbOrEnv || {};
+    row = {
+      id: providerId,
+      kind: providerId === 'gemini' ? 'gemini' : providerId === 'ollama' ? 'ollama' : 'openai-compatible',
+      base_url: env[providerId]?.baseUrl || env[providerId]?.url,
+      api_key: env[providerId]?.apiKey,
+    };
+  }
+
+  const primaryModel = cfg.summarizerModel || DEFAULT_MODELS[providerId] || '';
+  const primary = createAdapter(row, primaryModel);
   const fbProvider = cfg.summarizerFallbackProvider;
-  const fbModel = cfg.summarizerFallbackModel;
-  const primaryLabel = label(cfg.summarizerProvider, cfg.summarizerModel);
+  const fbModel = cfg.summarizerFallbackModel || (fbProvider ? DEFAULT_MODELS[fbProvider] : '') || '';
+  const primaryLabel = label(providerId, primaryModel);
   const fallbackLabel = label(fbProvider, fbModel);
-  // No fallback configured, or it names the same provider+model as the primary
-  // (retrying an identical dead endpoint buys nothing) — hand back the bare adapter.
-  if (!fbProvider || fallbackLabel === primaryLabel) return primary;
-  return new FallbackSummarizer(primary, () => createAdapter(fbProvider, fbModel, env), {
-    label: primaryLabel,
-    fallbackLabel,
-  });
-}
 
-export const SUPPORTED_PROVIDERS = ['gemini', 'ollama', 'openai', 'opencode', 'openrouter'];
+  if (!fbProvider || fbProvider === 'none' || fallbackLabel === primaryLabel) return primary;
+
+  return new FallbackSummarizer(primary, () => {
+    let fbRow;
+    if (dbOrEnv && typeof dbOrEnv.getProvider === 'function') {
+      fbRow = dbOrEnv.getProvider(fbProvider);
+      if (!fbRow) throw new Error(`Fallback provider "${fbProvider}" not found.`);
+    } else {
+      const env = dbOrEnv || {};
+      fbRow = {
+        id: fbProvider,
+        kind: fbProvider === 'gemini' ? 'gemini' : fbProvider === 'ollama' ? 'ollama' : 'openai-compatible',
+        base_url: env[fbProvider]?.baseUrl || env[fbProvider]?.url,
+        api_key: env[fbProvider]?.apiKey,
+      };
+    }
+    return createAdapter(fbRow, fbModel);
+  }, { label: primaryLabel, fallbackLabel });
+}

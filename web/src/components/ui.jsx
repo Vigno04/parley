@@ -39,6 +39,7 @@ export const Icon = {
   LogOut: (p) => <I {...p}><path d="M15 4h3.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H15" /><path d="M10 17l5-5-5-5M15 12H3" /></I>,
   UserPlus: (p) => <I {...p}><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0" /><path d="M19 8v6M22 11h-6" /></I>,
   Shield: (p) => <I {...p}><path d="M12 3l8 3v5c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z" /></I>,
+  Plus: (p) => <I {...p}><path d="M12 5v14M5 12h14" /></I>,
 };
 
 /* ── Brand mark (the real Parley waveform → note logo) ──────────────────── */

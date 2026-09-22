@@ -1,48 +1,91 @@
-import { SUPPORTED_PROVIDERS } from '../adapters/summarizer/index.js';
-import { DEFAULT_MODELS } from '../adapters/summarizer/models.js';
 import { LANGUAGE_CODES, SUMMARY_LANGUAGE_VALUES } from '../adapters/summarizer/languages.js';
-import { STT_PROVIDERS, STT_MODELS, sttProviderReady } from '../adapters/stt/index.js';
+import { sttProviderReady } from '../adapters/stt/index.js';
+import { DEFAULT_MODELS } from '../adapters/summarizer/models.js';
 
 const WHISPER_MODELS = ['tiny', 'base', 'small', 'medium', 'large-v3', 'large-v3-turbo'];
+const KNOWN_PROVIDERS = ['gemini', 'openai', 'opencode', 'openrouter', 'ollama'];
+const OPENAI_STT_MODELS = ['whisper-1', 'gpt-4o-transcribe', 'gpt-4o-mini-transcribe'];
 
-export function providerKeyPresent(provider, env) {
-  if (provider === 'gemini') return { ok: !!env.gemini.apiKey, missing: 'GEMINI_API_KEY' };
-  if (provider === 'openai') return { ok: !!env.openai.apiKey, missing: 'OPENAI_API_KEY' };
-  if (provider === 'opencode') return { ok: !!env.opencode.apiKey, missing: 'OPENCODE_API_KEY' };
-  if (provider === 'openrouter') return { ok: !!env.openrouter.apiKey, missing: 'OPENROUTER_API_KEY' };
-  if (provider === 'ollama') return { ok: !!env.ollama.url, missing: 'OLLAMA_URL' };
-  return { ok: false, missing: null };
+// Check whether a provider is usable: look it up in the DB (or env fallback).
+export function providerReady(providerId, dbOrEnv) {
+  if (!dbOrEnv) return { ok: false, missing: 'no database or environment' };
+
+  if (typeof dbOrEnv.getProvider === 'function') {
+    const row = dbOrEnv.getProvider(providerId);
+    if (row) {
+      if (row.kind === 'ollama') return { ok: !!row.base_url, missing: row.base_url ? null : 'base_url' };
+      return { ok: !!row.api_key, missing: row.api_key ? null : 'api_key' };
+    }
+  }
+
+  // Env-based / standard fallback
+  const env = dbOrEnv || {};
+  if (providerId === 'gemini') {
+    const key = env.gemini?.apiKey || process.env.GEMINI_API_KEY;
+    return { ok: !!key, missing: key ? null : 'GEMINI_API_KEY' };
+  }
+  if (providerId === 'openai') {
+    const key = env.openai?.apiKey || process.env.OPENAI_API_KEY;
+    return { ok: !!key, missing: key ? null : 'OPENAI_API_KEY' };
+  }
+  if (providerId === 'opencode') {
+    const key = env.opencode?.apiKey || process.env.OPENCODE_API_KEY;
+    return { ok: !!key, missing: key ? null : 'OPENCODE_API_KEY' };
+  }
+  if (providerId === 'openrouter') {
+    const key = env.openrouter?.apiKey || process.env.OPENROUTER_API_KEY;
+    return { ok: !!key, missing: key ? null : 'OPENROUTER_API_KEY' };
+  }
+  if (providerId === 'ollama') {
+    const url = env.ollama?.url || process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+    return { ok: !!url, missing: url ? null : 'OLLAMA_URL' };
+  }
+  return { ok: false, missing: 'Unknown provider' };
 }
 
-export function validateSetup(input, env) {
+// Validate a /setup or web PATCH, producing a clean patch object.
+export function validateSetup(input, dbOrEnv) {
   const patch = {};
+  const isDb = typeof dbOrEnv?.getProvider === 'function';
 
   if (input.provider !== undefined) {
-    if (!SUPPORTED_PROVIDERS.includes(input.provider)) {
-      return { ok: false, error: `Unknown provider "${input.provider}". Use one of: ${SUPPORTED_PROVIDERS.join(', ')}.` };
+    if (!isDb && !KNOWN_PROVIDERS.includes(input.provider)) {
+      return { ok: false, error: `Unknown provider: ${input.provider}.` };
     }
-    const key = providerKeyPresent(input.provider, env);
-    if (!key.ok) return { ok: false, error: `Cannot use ${input.provider}: ${key.missing} is not set in .env.` };
+    const ready = providerReady(input.provider, dbOrEnv);
+    if (!ready.ok) {
+      return { ok: false, error: `Cannot use provider "${input.provider}": ${ready.missing}.` };
+    }
+    if (isDb) {
+      const row = dbOrEnv.getProvider(input.provider);
+      if (row && row.caps !== 'summarizer' && row.caps !== 'both') {
+        return { ok: false, error: `Provider "${input.provider}" is not configured for summarization.` };
+      }
+    }
     patch.summarizerProvider = input.provider;
     if (input.model) patch.summarizerModel = input.model;
   }
 
-  // Optional second summarizer, tried only when the primary throws. 'none' (or
-  // an empty value) clears it and restores single-provider behaviour.
   if (input.fallbackProvider !== undefined) {
     const fb = input.fallbackProvider;
     if (fb === null || fb === '' || fb === 'none') {
       patch.summarizerFallbackProvider = null;
       patch.summarizerFallbackModel = null;
     } else {
-      if (!SUPPORTED_PROVIDERS.includes(fb)) {
-        return { ok: false, error: `Unknown fallback provider "${fb}". Use one of: ${SUPPORTED_PROVIDERS.join(', ')}, none.` };
+      if (!isDb && !KNOWN_PROVIDERS.includes(fb)) {
+        return { ok: false, error: `Unknown fallback provider: ${fb}.` };
       }
-      const key = providerKeyPresent(fb, env);
-      if (!key.ok) return { ok: false, error: `Cannot use ${fb} as fallback: ${key.missing} is not set in .env.` };
+      const ready = providerReady(fb, dbOrEnv);
+      if (!ready.ok) {
+        return { ok: false, error: `Cannot use fallback provider "${fb}": ${ready.missing}.` };
+      }
+      if (isDb) {
+        const row = dbOrEnv.getProvider(fb);
+        if (row && row.caps !== 'summarizer' && row.caps !== 'both') {
+          return { ok: false, error: `Provider "${fb}" is not configured for summarization.` };
+        }
+      }
       patch.summarizerFallbackProvider = fb;
-      // Default to this provider's own default model rather than inheriting the
-      // outgoing provider's model id, which would be meaningless to it.
       patch.summarizerFallbackModel = input.fallbackModel || DEFAULT_MODELS[fb] || null;
     }
   } else if (input.fallbackModel !== undefined) {
@@ -56,28 +99,22 @@ export function validateSetup(input, env) {
     patch.whisperModel = input.whisperModel;
   }
 
-  // Speech-to-text provider (sidecar | openai). Selecting a cloud
-  // provider requires its API key to be set, mirroring the summarizer checks.
   if (input.sttProvider !== undefined) {
-    if (!STT_PROVIDERS.includes(input.sttProvider)) {
-      return { ok: false, error: `Unknown STT provider "${input.sttProvider}". Use one of: ${STT_PROVIDERS.join(', ')}.` };
+    if (input.sttProvider !== 'sidecar') {
+      if (!isDb && input.sttProvider !== 'openai') {
+        return { ok: false, error: `Unknown STT provider: ${input.sttProvider}.` };
+      }
+      const ready = isDb ? sttProviderReady(input.sttProvider, dbOrEnv) : { ok: !!dbOrEnv?.openai?.apiKey, missing: 'OPENAI_API_KEY' };
+      if (!ready.ok) return { ok: false, error: `Cannot use STT provider "${input.sttProvider}": ${ready.missing}.` };
     }
-    const ready = sttProviderReady(input.sttProvider, env);
-    if (!ready.ok) return { ok: false, error: `Cannot use ${input.sttProvider} STT: ${ready.missing} is not set in .env.` };
     patch.sttProvider = input.sttProvider;
-    // A model supplied alongside the provider must belong to that provider.
-    if (input.sttModel !== undefined && input.sttModel !== null && input.sttProvider !== 'sidecar') {
-      if (!STT_MODELS[input.sttProvider].includes(input.sttModel)) {
-        return { ok: false, error: `Invalid ${input.sttProvider} model. Use one of: ${STT_MODELS[input.sttProvider].join(', ')}.` };
+    if (input.sttModel !== undefined && input.sttModel !== null) {
+      if (!isDb && input.sttProvider === 'openai' && !OPENAI_STT_MODELS.includes(input.sttModel)) {
+        return { ok: false, error: `Invalid OpenAI model. Use one of: ${OPENAI_STT_MODELS.join(', ')}.` };
       }
       patch.sttModel = input.sttModel;
     }
   } else if (input.sttModel !== undefined && input.sttModel !== null) {
-    // Model changed without naming a provider: validate against the current one.
-    const provider = env.sttProvider || (typeof input.currentSttProvider === 'string' ? input.currentSttProvider : 'sidecar');
-    if (provider !== 'sidecar' && !STT_MODELS[provider]?.includes(input.sttModel)) {
-      return { ok: false, error: `Invalid ${provider} model. Use one of: ${(STT_MODELS[provider] || []).join(', ')}.` };
-    }
     patch.sttModel = input.sttModel;
   }
 
@@ -103,6 +140,27 @@ export function validateSetup(input, env) {
 
 export { WHISPER_MODELS };
 
-export function availableProviders(env) {
-  return SUPPORTED_PROVIDERS.map((provider) => ({ provider, ...providerKeyPresent(provider, env) }));
+// List available summarizer providers from the DB (or env), with readiness status.
+export function availableProviders(dbOrEnv) {
+  if (!dbOrEnv) return [];
+  const custom = typeof dbOrEnv.listProviders === 'function'
+    ? dbOrEnv.listProviders()
+        .filter((row) => row.caps === 'summarizer' || row.caps === 'both')
+        .map((row) => ({
+          provider: row.id,
+          name: row.name,
+          kind: row.kind,
+          ...providerReady(row.id, dbOrEnv),
+        }))
+    : [];
+
+  const standard = KNOWN_PROVIDERS
+    .filter((k) => !custom.some((c) => c.provider === k))
+    .map((provider) => ({
+      provider,
+      label: provider,
+      ...providerReady(provider, dbOrEnv),
+    }));
+
+  return [...custom, ...standard];
 }

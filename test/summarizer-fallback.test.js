@@ -50,28 +50,39 @@ test('both failing names both providers and keeps the primary error attached', a
   assert.match(err.userMessage, /gemini:gemini-2\.5-flash/);
 });
 
+function mockDb(providers = {}) {
+  return {
+    getProvider: (id) => providers[id] || null,
+  };
+}
+
 test('getSummarizer returns a bare adapter when no fallback is configured', () => {
-  const env = { gemini: { apiKey: 'k' } };
-  const s = getSummarizer({ summarizerProvider: 'gemini', summarizerModel: 'gemini-2.5-flash' }, env);
+  const db = mockDb({ gemini: { id: 'gemini', kind: 'gemini', api_key: 'k' } });
+  const s = getSummarizer({ summarizerProvider: 'gemini', summarizerModel: 'gemini-2.5-flash' }, db);
   assert.equal(s instanceof FallbackSummarizer, false);
   assert.equal(s.lastUsed, undefined);
 });
 
 test('getSummarizer composes a fallback when one is configured', () => {
-  const env = { gemini: { apiKey: 'k' }, opencode: { apiKey: 'k', baseUrl: 'https://x/v1' } };
+  const db = mockDb({
+    gemini: { id: 'gemini', kind: 'gemini', api_key: 'k' },
+    opencode: { id: 'opencode', kind: 'openai-compatible', api_key: 'k', base_url: 'https://x/v1' },
+  });
   const s = getSummarizer({
     summarizerProvider: 'opencode', summarizerModel: 'glm-5.3',
     summarizerFallbackProvider: 'gemini', summarizerFallbackModel: 'gemini-2.5-flash',
-  }, env);
+  }, db);
   assert.ok(s instanceof FallbackSummarizer);
   assert.equal(s.lastUsed, 'opencode:glm-5.3');
 });
 
 test('a fallback identical to the primary is not wrapped', () => {
-  const env = { opencode: { apiKey: 'k', baseUrl: 'https://x/v1' } };
+  const db = mockDb({
+    opencode: { id: 'opencode', kind: 'openai-compatible', api_key: 'k', base_url: 'https://x/v1' },
+  });
   const s = getSummarizer({
     summarizerProvider: 'opencode', summarizerModel: 'glm-5.3',
     summarizerFallbackProvider: 'opencode', summarizerFallbackModel: 'glm-5.3',
-  }, env);
+  }, db);
   assert.equal(s instanceof FallbackSummarizer, false);
 });

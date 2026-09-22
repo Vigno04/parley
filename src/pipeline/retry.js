@@ -64,7 +64,7 @@ export async function retryMeeting(db, meetingId, { dataDir, deliver = null } = 
     };
     db.setMeetingStatus(meetingId, 'processing');
     let notes;
-    const summarizer = getSummarizer(cfg);
+    const summarizer = getSummarizer(cfg, db);
     try {
       notes = await summarizer.summarize(transcript, meta);
     } catch (err) {
