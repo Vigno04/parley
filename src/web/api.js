@@ -301,7 +301,7 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
       id,
       name,
       kind: kind || 'openai-compatible',
-      caps: caps || 'summarizer',
+      caps: caps || 'both',
       baseUrl,
       apiKey,
       models,

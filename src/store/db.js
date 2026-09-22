@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS providers (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
   kind       TEXT NOT NULL DEFAULT 'openai-compatible',
-  caps       TEXT NOT NULL DEFAULT 'summarizer',
+  caps       TEXT NOT NULL DEFAULT 'both',
   base_url   TEXT,
   api_key    TEXT,
   models     TEXT,
@@ -118,6 +118,10 @@ export function openDb(path) {
   if (!providerCols.some((c) => c.name === 'models')) {
     sql.exec(`ALTER TABLE providers ADD COLUMN models TEXT`);
   }
+  // Migration: restore 'both' capabilities for providers if previously defaulted to summarizer
+  try {
+    sql.prepare(`UPDATE providers SET caps = 'both' WHERE caps = 'summarizer'`).run();
+  } catch { /* ignore */ }
 
   return {
     sql,
@@ -509,7 +513,7 @@ export function openDb(path) {
         id,
         name,
         kind || 'openai-compatible',
-        caps || 'summarizer',
+        caps || 'both',
         baseUrl || null,
         apiKey || null,
         modelsJson ?? null,

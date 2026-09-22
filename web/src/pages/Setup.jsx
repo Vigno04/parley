@@ -12,6 +12,12 @@ const PROVIDER_KINDS = [
   { id: 'ollama', label: 'Ollama', defaultUrl: 'http://localhost:11434', hint: 'Local or network Ollama instance' },
 ];
 
+const PROVIDER_CAPS = [
+  { id: 'both', label: 'Summarizer & Transcription (STT)' },
+  { id: 'summarizer', label: 'Summarizer only' },
+  { id: 'stt', label: 'Transcription (STT) only' },
+];
+
 function Field({ label, hint, children }) {
   return (
     <div>
@@ -60,6 +66,7 @@ function Chevron() {
 /* ── Provider Form (Create / Edit) ────────────────────────────────────────── */
 function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
   const [kind, setKind] = useState(initial?.kind || 'openai-compatible');
+  const [caps, setCaps] = useState(initial?.caps || 'both');
   const [id, setId] = useState(initial?.id || '');
   const [name, setName] = useState(initial?.name || '');
   const [baseUrl, setBaseUrl] = useState(initial?.base_url || initial?.baseUrl || '');
@@ -123,7 +130,7 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
       const payload = {
         name: name.trim(),
         kind,
-        caps: 'summarizer',
+        caps: caps || 'both',
         baseUrl: baseUrl.trim() || null,
         apiKey: apiKey.trim() || undefined,
         models: parsedModels,
@@ -168,6 +175,23 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
           </div>
         </Field>
 
+        <Field label="Capabilities" hint="Whether this endpoint does summarization, audio transcription (STT), or both">
+          <div className="relative">
+            <select
+              value={caps}
+              onChange={(e) => setCaps(e.target.value)}
+              className="input appearance-none pr-9 cursor-pointer"
+            >
+              {PROVIDER_CAPS.map((c) => (
+                <option key={c.id} value={c.id}>{c.label}</option>
+              ))}
+            </select>
+            <Chevron />
+          </div>
+        </Field>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="Identifier (slug)" hint={isNew ? 'Unique key used by /setup, e.g. "groq" or "vllm"' : 'Cannot be changed'}>
           <input
             type="text"
@@ -179,18 +203,18 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
             className="input disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </Field>
-      </div>
 
-      <Field label="Display Name">
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Groq Cloud"
-          required
-          className="input"
-        />
-      </Field>
+        <Field label="Display Name">
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Groq Cloud"
+            required
+            className="input"
+          />
+        </Field>
+      </div>
 
       <Field label="Base URL" hint={kind === 'gemini' ? 'Optional for Gemini (defaults to Google AI endpoint)' : selectedKind.defaultUrl ? `e.g. ${selectedKind.defaultUrl}` : undefined}>
         <input
@@ -363,6 +387,11 @@ function ProvidersCard({ providers, onReload, onSelected }) {
                     <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-surface-3 text-muted">
                       {p.kind}
                     </span>
+                    {p.caps && (
+                      <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-surface-3 text-muted">
+                        {p.caps === 'both' ? 'summarizer + stt' : p.caps}
+                      </span>
+                    )}
                     {p.models && (
                       <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-surface-3 text-muted">
                         {Array.isArray(p.models)

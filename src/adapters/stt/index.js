@@ -85,10 +85,18 @@ export function availableSttProviders(dbOrEnv = null, env = envConfig) {
   if (isDb) {
     for (const row of dbOrEnv.listProviders()) {
       if (row.caps !== 'stt' && row.caps !== 'both') continue;
+      let provModels = [];
+      if (row.models) {
+        try {
+          provModels = Array.isArray(row.models) ? row.models : JSON.parse(row.models);
+        } catch {
+          provModels = String(row.models).split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
+        }
+      }
       out.push({
         provider: row.id,
         label: row.name || row.id,
-        models: [],
+        models: provModels,
         ...sttProviderReady(row.id, dbOrEnv, env),
       });
     }
