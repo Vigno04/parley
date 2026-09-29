@@ -169,3 +169,41 @@ test('RETRYABLE_STATUSES covers the failure states', () => {
   assert.ok(RETRYABLE_STATUSES.has('summary_failed'));
   assert.ok(!RETRYABLE_STATUSES.has('done'));
 });
+
+test('POST /api/meetings/:id/retranscribe rejects when no audio remains', async () => {
+  const db = openDb(':memory:');
+  const app = express();
+  app.use(express.json());
+  app.use('/api', apiRouter({ db, client: null }));
+  const { base, close } = await listen(app);
+  try {
+    const id = db.createMeeting({ guildId: 'g1', channelId: 'c', channelName: 'gen', startedAt: 'now' });
+    db.setMeetingStatus(id, 'done');
+    const r = await fetch(`${base}/api/meetings/${id}/retranscribe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ whisperModel: 'medium' }),
+    });
+    assert.equal(r.status, 400);
+    const body = await r.json();
+    assert.ok(body.error.includes('No audio recordings'));
+  } finally { close(); }
+});
+
+test('GET /api/meetings/:id reports hasAudio: true when audio files exist on disk', async () => {
+  const { dir, cleanup } = tmp();
+  const db = openDb(':memory:');
+  const app = express();
+  app.use(express.json());
+  app.use('/api', apiRouter({ db, client: null }));
+  const { base, close } = await listen(app);
+  try {
+    const id = db.createMeeting({ guildId: 'g1', channelId: 'c', channelName: 'gen', startedAt: 'now' });
+    const res1 = await (await fetch(`${base}/api/meetings/${id}`)).json();
+    assert.equal(res1.hasAudio, false);
+  } finally {
+    close();
+    cleanup();
+  }
+});
+

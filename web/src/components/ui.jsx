@@ -40,6 +40,8 @@ export const Icon = {
   UserPlus: (p) => <I {...p}><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0" /><path d="M19 8v6M22 11h-6" /></I>,
   Shield: (p) => <I {...p}><path d="M12 3l8 3v5c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z" /></I>,
   Plus: (p) => <I {...p}><path d="M12 5v14M5 12h14" /></I>,
+  Sliders: (p) => <I {...p}><line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" /><line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" /><line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" /><line x1="1" y1="14" x2="7" y2="14" /><line x1="9" y1="8" x2="15" y2="8" /><line x1="17" y1="16" x2="23" y2="16" /></I>,
+  Server: (p) => <I {...p}><rect width="20" height="8" x="2" y="2" rx="2" /><rect width="20" height="8" x="2" y="14" rx="2" /><line x1="6" x2="6.01" y1="6" y2="6" /><line x1="6" x2="6.01" y1="18" y2="18" /></I>,
 };
 
 /* ── Brand mark (the real Parley waveform → note logo) ──────────────────── */
@@ -112,6 +114,7 @@ export function StatusPill({ status }) {
   const map = {
     done: { label: 'Done', color: 'var(--accent)', bg: 'var(--accent-soft)' },
     recording: { label: 'Recording', color: 'var(--error)', bg: 'var(--error-soft)' },
+    recorded: { label: 'Recorded', color: 'var(--primary)', bg: 'color-mix(in srgb, var(--primary) 15%, transparent)' },
     processing: { label: 'Processing', color: 'var(--warn)', bg: 'var(--warn-soft)' },
     transcription_failed: { label: 'Transcription failed', color: 'var(--error)', bg: 'var(--error-soft)' },
     summary_failed: { label: 'Summary failed', color: 'var(--error)', bg: 'var(--error-soft)' },

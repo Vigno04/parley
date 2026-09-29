@@ -139,8 +139,38 @@ export function validateSetup(input, dbOrEnv) {
     patch.summaryLanguage = input.summary_language;
   }
 
+  const retentionInput = input.recordingRetention !== undefined ? input.recordingRetention : input.recording_retention;
+  if (retentionInput !== undefined) {
+    if (!RECORDING_RETENTION_OPTIONS.includes(retentionInput)) {
+      return { ok: false, error: `Invalid recording retention. Use one of: ${RECORDING_RETENTION_OPTIONS.join(', ')}.` };
+    }
+    patch.recordingRetention = retentionInput;
+  }
+
+  const summarizerEnabledInput = input.summarizerEnabled !== undefined ? input.summarizerEnabled : input.summarizer_enabled;
+  if (summarizerEnabledInput !== undefined) {
+    patch.summarizerEnabled = !!summarizerEnabledInput;
+  }
+
+  const autoTranscribeInput = input.autoTranscribe !== undefined ? input.autoTranscribe : input.auto_transcribe;
+  if (autoTranscribeInput !== undefined) {
+    patch.autoTranscribe = !!autoTranscribeInput;
+  }
+
   return { ok: true, patch };
 }
+
+export const RECORDING_RETENTION_OPTIONS = ['immediately', '1d', '3d', '7d', '14d', '30d', '90d', 'never'];
+export const RECORDING_RETENTION_LABELS = {
+  immediately: 'Delete immediately (as soon as processed)',
+  '1d': 'Keep for 1 day',
+  '3d': 'Keep for 3 days',
+  '7d': 'Keep for 7 days',
+  '14d': 'Keep for 14 days',
+  '30d': 'Keep for 30 days',
+  '90d': 'Keep for 90 days',
+  never: 'Never delete (keep indefinitely)',
+};
 
 export { WHISPER_MODELS };
 

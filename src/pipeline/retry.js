@@ -20,8 +20,8 @@ import { describeSummarizerError } from '../adapters/summarizer/errors.js';
 import { parsePcmName } from '../voice/audio.js';
 import { processMeeting } from './orchestrator.js';
 
-// Statuses the UI should offer a retry for.
-export const RETRYABLE_STATUSES = new Set(['transcription_failed', 'summary_failed', 'processing', 'recording']);
+// Statuses the UI should offer a retry or transcription for.
+export const RETRYABLE_STATUSES = new Set(['transcription_failed', 'summary_failed', 'processing', 'recording', 'recorded']);
 
 /** Decide what a retry would do, without doing it (for enabling UI + messaging). */
 export function retryPlan(db, meetingId, { dataDir, exists = readdirSync } = {}) {
@@ -55,8 +55,14 @@ export async function retryMeeting(db, meetingId, { dataDir, deliver = null } = 
     const utterances = db.listUtterances(meetingId).map((u) => ({
       userId: u.user_id, displayName: u.display_name, startMs: u.start_ms, endMs: u.end_ms, text: u.text,
     }));
-    const transcript = buildTranscript(utterances);
     const talktime = computeTalkTime(utterances);
+    if (cfg.summarizerEnabled === false) {
+      db.clearSummary(meetingId);
+      db.saveSummary(meetingId, null, talktime, 'disabled');
+      db.setMeetingStatus(meetingId, 'done', new Date().toISOString());
+      return { ok: true, action: 'resummarize', status: 'done' };
+    }
+    const transcript = buildTranscript(utterances);
     const meta = {
       channelName: meeting.channel_name, date: meeting.started_at,
       attendees: db.listAttendees(meetingId).map((a) => a.display_name),
@@ -80,27 +86,57 @@ export async function retryMeeting(db, meetingId, { dataDir, deliver = null } = 
     return { ok: true, action: 'resummarize', status: 'done' };
   }
 
-  // retranscribe: rebuild tracks from the PCM filenames and run the full pipeline.
+  return retranscribeMeeting(db, meetingId, { dataDir, deliver });
+}
+
+/**
+ * Retranscribe a meeting using its saved audio files and an optional model override.
+ */
+export async function retranscribeMeeting(db, meetingId, { dataDir, deliver = null, sttProvider, whisperModel, sttModel } = {}) {
+  const meeting = db.getMeeting(meetingId);
+  if (!meeting) return { ok: false, action: 'retranscribe', status: null, reason: 'Meeting not found.' };
+
   const audioDir = join(dataDir, 'audio', String(meetingId));
+  let pcmFiles = [];
+  try {
+    pcmFiles = readdirSync(audioDir).filter((f) => f.endsWith('.pcm'));
+  } catch {
+    pcmFiles = [];
+  }
+  if (pcmFiles.length === 0) {
+    return { ok: false, action: 'retranscribe', status: meeting.status, reason: 'No audio recordings remain on disk for this meeting.' };
+  }
+
+  const baseCfg = getGuildConfig(db, meeting.guild_id);
+  const cfg = {
+    ...baseCfg,
+    ...(sttProvider ? { sttProvider } : {}),
+    ...(whisperModel ? { whisperModel } : {}),
+    ...(sttModel !== undefined ? { sttModel } : {}),
+  };
+
   const nameById = new Map(db.listAttendees(meetingId).map((a) => [a.user_id, a.display_name]));
-  const tracks = readdirSync(audioDir)
-    .filter((f) => f.endsWith('.pcm'))
+  const tracks = pcmFiles
     .map((f) => {
       const { userId, startMs } = parsePcmName(f);
       return { userId, displayName: nameById.get(userId) || userId, startMs, pcmPath: join(audioDir, f) };
     })
     .sort((a, b) => a.startMs - b.startMs);
+
   try {
     const { notes, empty } = await processMeeting(db, meetingId, { tracks, cfg, deliver });
-    // Success (or a confirmed-empty meeting): the PCM has served its purpose, so
-    // drop the audio dir. The bot's own finalize does this too, but a retry runs
-    // outside that path and would otherwise leak the directory forever.
-    await rm(audioDir, { recursive: true, force: true }).catch(() => {});
+    // Check retention before dropping the audio dir
+    if ((cfg.recordingRetention || 'immediately') === 'immediately') {
+      await rm(audioDir, { recursive: true, force: true }).catch(() => {});
+    }
     return { ok: true, action: 'retranscribe', status: db.getMeeting(meetingId)?.status, empty: !notes || !!empty };
   } catch (err) {
-    // Keep the PCM on failure so a later retry can try again.
-    const status = db.getMeeting(meetingId).status;
-    return { ok: false, action: 'retranscribe', status,
-      reason: err.userMessage || describeSummarizerError(err, cfg.summarizerProvider) };
+    const status = db.getMeeting(meetingId)?.status;
+    return {
+      ok: false,
+      action: 'retranscribe',
+      status,
+      reason: err.userMessage || describeSummarizerError(err, cfg.summarizerProvider),
+    };
   }
 }

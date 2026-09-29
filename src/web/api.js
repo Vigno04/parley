@@ -1,10 +1,11 @@
-// src/web/api.js
 import { Router } from 'express';
 import { ChannelType } from 'discord.js';
+import { readdirSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getGuildConfig, setGuildConfig } from '../store/config.js';
-import { validateSetup, availableProviders } from '../commands/setup-logic.js';
+import { validateSetup, availableProviders, RECORDING_RETENTION_OPTIONS, RECORDING_RETENTION_LABELS } from '../commands/setup-logic.js';
+import { LANGUAGES } from '../adapters/summarizer/languages.js';
 import { config as env } from '../config/env.js';
 import { askMeeting } from '../adapters/summarizer/ask.js';
 import { getSummarizer } from '../adapters/summarizer/index.js';
@@ -13,7 +14,7 @@ import { resolveSummaryLanguage } from '../adapters/summarizer/languages.js';
 import { listModels, clearModelCache, DEFAULT_MODELS } from '../adapters/summarizer/models.js';
 import { connectionStatus, setConnection } from '../store/secrets.js';
 import { COMMAND_CATALOG } from '../commands/definitions.js';
-import { retryMeeting, retryPlan, RETRYABLE_STATUSES } from '../pipeline/retry.js';
+import { retryMeeting, retranscribeMeeting, retryPlan, RETRYABLE_STATUSES } from '../pipeline/retry.js';
 import { availableSttProviders } from '../adapters/stt/index.js';
 import { requireAdmin } from './auth.js';
 
@@ -100,11 +101,18 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     const meeting = db.getMeeting(id);
     if (!meeting) return res.status(404).json({ error: 'meeting not found' });
     const plan = retryPlan(db, id, { dataDir: env.dataDir });
+    let pcmCount = 0;
+    try {
+      pcmCount = readdirSync(audioDir(id)).filter((f) => f.endsWith('.pcm')).length;
+    } catch {}
     res.json({
       meeting,
       summary: db.getSummary(id),
       attendees: db.listAttendees(id),
       utterances: db.listUtterances(id),
+      hasAudio: pcmCount > 0,
+      pcmCount,
+      sttProviders: availableSttProviders(db, env),
       retry: { eligible: RETRYABLE_STATUSES.has(meeting.status) && plan.ok, action: plan.action, reason: plan.reason || null },
     });
   });
@@ -155,6 +163,52 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
       const result = await retryMeeting(db, id, { dataDir: env.dataDir, deliver });
       if (!result.ok) return res.status(502).json({ error: result.reason || 'Retry failed.', ...result });
       res.json({ ok: true, ...result, meeting: db.getMeeting(id) });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  r.post('/meetings/:id/retranscribe', async (req, res) => {
+    const id = Number(req.params.id);
+    const meeting = db.getMeeting(id);
+    if (!meeting) return res.status(404).json({ error: 'meeting not found' });
+
+    let pcmCount = 0;
+    try {
+      pcmCount = readdirSync(audioDir(id)).filter((f) => f.endsWith('.pcm')).length;
+    } catch {}
+    if (pcmCount === 0) {
+      return res.status(400).json({ error: 'No audio recordings remain for this meeting.' });
+    }
+
+    const { sttProvider, whisperModel, sttModel } = req.body || {};
+    const c = liveClient();
+    const deliver = c
+      ? async (notes, talktime) => {
+          const cfg = getGuildConfig(db, meeting.guild_id);
+          const { postNotes } = await import('../delivery/post.js');
+          await postNotes({ client: c, meeting, cfg, notes, talktime });
+        }
+      : null;
+
+    try {
+      const result = await retranscribeMeeting(db, id, {
+        dataDir: env.dataDir,
+        deliver,
+        sttProvider,
+        whisperModel,
+        sttModel,
+      });
+      if (!result.ok) {
+        return res.status(502).json({ error: result.reason || 'Retranscription failed.', ...result });
+      }
+      res.json({
+        ok: true,
+        ...result,
+        meeting: db.getMeeting(id),
+        summary: db.getSummary(id),
+        utterances: db.listUtterances(id),
+      });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
@@ -249,6 +303,9 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
       channels,
       secrets,
       defaultModels: DEFAULT_MODELS,
+      languages: LANGUAGES,
+      recordingRetentionOptions: RECORDING_RETENTION_OPTIONS,
+      recordingRetentionLabels: RECORDING_RETENTION_LABELS,
     });
   });
 

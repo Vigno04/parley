@@ -7,7 +7,8 @@ import { resolveSummaryLanguage } from '../adapters/summarizer/languages.js';
 export async function processMeeting(db, meetingId, opts) {
   const meeting = db.getMeeting(meetingId);
   const transcribe = opts.transcribe || ((tracks, cfg) => transcribeTracks(tracks, cfg, { db, ...(opts.transcribeDeps || {}) }));
-  const summarizer = opts.summarizer || getSummarizer(opts.cfg, db);
+  const isSummarizerEnabled = opts.cfg?.summarizerEnabled !== false;
+  const summarizer = isSummarizerEnabled ? (opts.summarizer || getSummarizer(opts.cfg, db)) : null;
 
   db.setMeetingStatus(meetingId, 'processing');
 
@@ -72,32 +73,39 @@ export async function processMeeting(db, meetingId, opts) {
     summaryLanguage: resolveSummaryLanguage(opts.cfg),
   };
 
-  let notes;
-  const summarizeStart = Date.now();
-  try {
-    notes = await summarizer.summarize(transcript, meta);
-  } catch (err) {
-    db.setMeetingStatus(meetingId, 'summary_failed');
-    // FallbackSummarizer already composed a message naming both attempts; don't
-    // overwrite it with one that only mentions the primary provider.
-    err.userMessage ??= describeSummarizerError(err, opts.cfg.summarizerProvider);
-    throw err;
+  let notes = null;
+  let summarizeMs = 0;
+  let modelUsed = 'disabled';
+
+  if (isSummarizerEnabled && summarizer) {
+    const summarizeStart = Date.now();
+    try {
+      notes = await summarizer.summarize(transcript, meta);
+    } catch (err) {
+      db.setMeetingStatus(meetingId, 'summary_failed');
+      // FallbackSummarizer already composed a message naming both attempts; don't
+      // overwrite it with one that only mentions the primary provider.
+      err.userMessage ??= describeSummarizerError(err, opts.cfg.summarizerProvider);
+      throw err;
+    }
+    summarizeMs = Date.now() - summarizeStart;
+    modelUsed = summarizer.lastUsed ?? `${opts.cfg.summarizerProvider}:${opts.cfg.summarizerModel || ''}`;
+  } else {
+    console.log(`[pipeline] meeting ${meetingId}: summarization disabled, skipping LLM summary`);
   }
-  const summarizeMs = Date.now() - summarizeStart;
 
   const timings = { transcribeMs, summarizeMs, tracks: opts.tracks.length };
   console.log(`[pipeline] meeting ${meetingId}: transcribe ${transcribeMs}ms (${opts.tracks.length} tracks), summarize ${summarizeMs}ms`);
 
-  // summarizer.lastUsed is set by FallbackSummarizer to whichever provider
-  // actually produced these notes; plain adapters leave it undefined.
-  const modelUsed = summarizer.lastUsed ?? `${opts.cfg.summarizerProvider}:${opts.cfg.summarizerModel || ''}`;
   db.saveSummary(meetingId, notes, talktime, modelUsed, new Date().toISOString(), timings);
-  // Seed createdAt from the MEETING date, not now(): a pipeline that runs long
-  // (long transcription queue) would otherwise stamp today onto a meeting that
-  // started hours ago, so the action items collapse onto the wrong day in the
-  // timeline view. (Mirrors what db.backfillTodos + realignTodoDates already do
-  // for backfilled rows.)
-  db.seedTodos(meetingId, meeting.guild_id, notes.actionItems || [], meeting.started_at);
+  if (notes) {
+    // Seed createdAt from the MEETING date, not now(): a pipeline that runs long
+    // (long transcription queue) would otherwise stamp today onto a meeting that
+    // started hours ago, so the action items collapse onto the wrong day in the
+    // timeline view. (Mirrors what db.backfillTodos + realignTodoDates already do
+    // for backfilled rows.)
+    db.seedTodos(meetingId, meeting.guild_id, notes.actionItems || [], meeting.started_at);
+  }
   db.setMeetingStatus(meetingId, 'done', new Date().toISOString());
 
   // Delivery is the last step and runs AFTER the summary is safely persisted, so
@@ -107,7 +115,7 @@ export async function processMeeting(db, meetingId, opts) {
   // log it or offer a re-post, without treating the meeting as failed.
   let delivered = false;
   let deliveryError = null;
-  if (opts.deliver) {
+  if (opts.deliver && notes) {
     try {
       await opts.deliver(notes, talktime, meta);
       delivered = true;

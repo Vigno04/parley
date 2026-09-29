@@ -34,6 +34,7 @@ const label = (id, model) => `${id}:${model || ''}`;
 // Resolve a guild config to a working summarizer. Looks up the provider row
 // from the DB (with backward-compatible env fallback).
 export function getSummarizer(cfg = {}, dbOrEnv = null) {
+  if (cfg?.summarizerEnabled === false) return null;
   const providerId = cfg?.summarizerProvider;
   if (providerId === 'fake') return new FakeSummarizer();
 

@@ -54,6 +54,7 @@ export const api = {
   mergeMeetings: (id, sourceIds) => fetch(`/api/meetings/${id}/merge`, jsonBody('POST', { sourceIds })).then(json),
   search: (g, q) => fetch(`/api/guilds/${g}/search?q=${encodeURIComponent(q)}`).then(json),
   retryMeeting: (id) => fetch(`/api/meetings/${id}/retry`, { method: 'POST' }).then(json),
+  retranscribeMeeting: (id, opts = {}) => fetch(`/api/meetings/${id}/retranscribe`, jsonBody('POST', opts)).then(json),
   commands: () => fetch('/api/commands').then(json),
   config: (g) => fetch(`/api/guilds/${g}/config`).then(json),
   saveConfig: (g, patch) => fetch(`/api/guilds/${g}/config`, jsonBody('PATCH', patch)).then(json),

@@ -7,23 +7,79 @@ import { fmtDateLong, fmtTime, fmtDuration, fmtClock, fmtMs, colorOf } from '../
 import { useDismissable } from '../hooks/useDismissable.js';
 import Markdown from '../components/Markdown.jsx';
 
-/* ── retry banner (failed / stuck meetings) ───────────────────────────── */
+/* ── retry banner (failed meetings) ─────────────────────────────────── */
 const STATUS_COPY = {
   transcription_failed: {
     title: 'Transcription failed',
-    body: 'The speech-to-text sidecar was unreachable or errored while transcribing this meeting. If the audio is still on disk, you can retry the whole pipeline.',
+    body: 'The speech-to-text sidecar was unreachable or errored while transcribing this meeting. If the audio is still on disk, you can retry the transcription.',
   },
   summary_failed: {
     title: 'Summary failed',
     body: 'The transcript was captured, but the summarizer errored (often a transient rate-limit or a missing API key). Retrying re-runs only the summary.',
   },
-  processing: {
-    title: 'Stuck processing',
-    body: 'This meeting was left mid-process, likely because the bot restarted. Retry to finish it.',
-  },
 };
 
-function RetryBanner({ meeting, retry, onDone }) {
+function ProcessingBanner() {
+  return (
+    <div className="card p-5 mt-8 border-l-2 border-primary bg-surface-2/40">
+      <div className="flex items-start gap-3">
+        <span className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin shrink-0 mt-1" />
+        <div className="min-w-0 flex-1">
+          <p className="text-[15px] font-semibold text-ink">Processing meeting…</p>
+          <p className="text-[13.5px] text-muted leading-relaxed mt-1">
+            Speech-to-text transcription and meeting processing are currently running. This page will update automatically once completed.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RecordedBanner({ meeting, onTranscribe, onOpenRetranscribe, busy }) {
+  return (
+    <div className="card p-5 mt-8 border-l-2" style={{ borderColor: 'var(--primary)' }}>
+      <div className="flex items-start gap-3">
+        <Icon.Mic width={20} height={20} className="text-primary shrink-0 mt-0.5" />
+        <div className="min-w-0 flex-1">
+          <p className="text-[15px] font-semibold text-ink">Recording finished — Ready to transcribe</p>
+          <p className="text-[13.5px] text-muted leading-relaxed mt-1">
+            Audio recording is safely preserved on disk. Auto-transcription is disabled for this server. Start transcription whenever you're ready.
+          </p>
+          <div className="mt-4 flex items-center gap-2.5 flex-wrap">
+            <button
+              onClick={onTranscribe}
+              disabled={busy}
+              className="btn btn-primary !py-2"
+            >
+              {busy ? (
+                <span className="inline-flex items-center gap-2">
+                  <span className="h-3.5 w-3.5 rounded-full border-2 border-current border-t-transparent animate-spin" />
+                  Starting…
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-2">
+                  <Icon.Mic width={15} height={15} />
+                  Start transcription
+                </span>
+              )}
+            </button>
+            {onOpenRetranscribe && (
+              <button
+                onClick={onOpenRetranscribe}
+                disabled={busy}
+                className="btn btn-ghost !py-2 border border-border"
+              >
+                Choose model…
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RetryBanner({ meeting, retry, hasAudio, onOpenRetranscribe, onDone }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const copy = STATUS_COPY[meeting.status] || { title: 'Needs attention', body: `Status: ${meeting.status}.` };
@@ -51,7 +107,7 @@ function RetryBanner({ meeting, retry, onDone }) {
           <p className="text-[13.5px] text-muted leading-relaxed mt-1">{copy.body}</p>
           {!canRetry && retry?.reason && <p className="text-[13px] text-error mt-2">{retry.reason}</p>}
           {err && <p className="text-[13px] text-error mt-2">{err}</p>}
-          <div className="mt-3.5 flex items-center gap-2">
+          <div className="mt-3.5 flex items-center gap-2 flex-wrap">
             <button onClick={run} disabled={!canRetry || busy} className="btn btn-primary !py-2">
               {busy ? (
                 <span className="inline-flex items-center gap-2"><span className="h-3.5 w-3.5 rounded-full border-2 border-current border-t-transparent animate-spin" />Retrying…</span>
@@ -59,6 +115,11 @@ function RetryBanner({ meeting, retry, onDone }) {
                 <span className="inline-flex items-center gap-2"><Icon.Refresh width={15} height={15} />Retry {retry?.action === 'retranscribe' ? 'transcription' : 'summary'}</span>
               )}
             </button>
+            {hasAudio && onOpenRetranscribe && (
+              <button onClick={onOpenRetranscribe} disabled={busy} className="btn btn-ghost !py-2">
+                <span className="inline-flex items-center gap-2"><Icon.Mic width={15} height={15} />Redo with another model…</span>
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -188,8 +249,177 @@ function AskBox({ guildId, meetingId }) {
   );
 }
 
+/* ── re-transcription modal ───────────────────────────────────────────── */
+function RetranscribeModal({ meeting, sttProviders = [], onClose, onDone }) {
+  const [provider, setProvider] = useState(sttProviders[0]?.provider || 'sidecar');
+  const [whisperModel, setWhisperModel] = useState('small');
+  const [sttModel, setSttModel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const ref = useDismissable(true, () => { if (!busy) onClose(); });
+
+  const activeProv = sttProviders.find((p) => p.provider === provider) || sttProviders[0];
+  const isSidecar = provider === 'sidecar';
+  const whisperModels = isSidecar ? (activeProv?.models || ['tiny', 'base', 'small', 'medium', 'large-v3', 'large-v3-turbo']) : [];
+  const cloudModels = !isSidecar ? (activeProv?.models || []) : [];
+
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true);
+    setErr(null);
+    try {
+      const payload = {
+        sttProvider: provider,
+        ...(isSidecar ? { whisperModel } : { sttModel: sttModel || null }),
+      };
+      const res = await api.retranscribeMeeting(meeting.id, payload);
+      if (!res.ok) {
+        setErr(res.error || res.reason || 'Retranscription failed.');
+        setBusy(false);
+      } else {
+        onDone?.();
+        onClose?.();
+      }
+    } catch (e) {
+      setErr(e?.message || 'Retranscription failed.');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+      <div ref={ref} className="card p-6 w-full max-w-md shadow-2xl space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-bold text-ink flex items-center gap-2">
+              <Icon.Mic width={18} height={18} className="text-primary" />
+              Redo Transcription
+            </h2>
+            <p className="text-xs text-muted mt-1">
+              Re-transcribe the recorded audio using a different AI model. Meeting notes and action items will update automatically.
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="text-muted hover:text-ink text-lg leading-none p-1"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        {err && (
+          <div className="p-3 bg-error-soft text-error text-xs rounded-md">
+            {err}
+          </div>
+        )}
+
+        <form onSubmit={submit} className="space-y-4">
+          <div>
+            <label className="block text-[13px] font-medium text-ink mb-1.5">Transcription engine / provider</label>
+            <div className="relative">
+              <select
+                value={provider}
+                onChange={(e) => {
+                  setProvider(e.target.value);
+                  setSttModel('');
+                }}
+                disabled={busy}
+                className="input appearance-none pr-9 cursor-pointer"
+              >
+                {sttProviders.map((p) => (
+                  <option key={p.provider} value={p.provider} disabled={!p.ok}>
+                    {p.label || p.provider}{!p.ok ? ' (not configured)' : ''}
+                  </option>
+                ))}
+              </select>
+              <Icon.Chevron width={14} height={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rotate-90 text-muted" />
+            </div>
+          </div>
+
+          {isSidecar ? (
+            <div>
+              <label className="block text-[13px] font-medium text-ink mb-1.5">Whisper model size</label>
+              <div className="relative">
+                <select
+                  value={whisperModel}
+                  onChange={(e) => setWhisperModel(e.target.value)}
+                  disabled={busy}
+                  className="input appearance-none pr-9 cursor-pointer"
+                >
+                  {whisperModels.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+                <Icon.Chevron width={14} height={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rotate-90 text-muted" />
+              </div>
+              <p className="text-[11px] text-muted mt-1.5">Larger models offer higher transcription accuracy on accents and technical terms.</p>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-[13px] font-medium text-ink mb-1.5">Cloud model</label>
+              {cloudModels.length > 0 ? (
+                <div className="relative">
+                  <select
+                    value={sttModel}
+                    onChange={(e) => setSttModel(e.target.value)}
+                    disabled={busy}
+                    className="input appearance-none pr-9 cursor-pointer"
+                  >
+                    <option value="">— Provider default —</option>
+                    {cloudModels.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                  <Icon.Chevron width={14} height={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rotate-90 text-muted" />
+                </div>
+              ) : (
+                <input
+                  type="text"
+                  value={sttModel}
+                  onChange={(e) => setSttModel(e.target.value)}
+                  placeholder="e.g. whisper-1"
+                  disabled={busy}
+                  className="input"
+                />
+              )}
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={busy}
+              className="btn btn-ghost !py-1.5"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className="btn btn-primary !py-1.5"
+            >
+              {busy ? (
+                <span className="inline-flex items-center gap-2">
+                  <span className="h-3.5 w-3.5 rounded-full border-2 border-current border-t-transparent animate-spin" />
+                  Transcribing…
+                </span>
+              ) : (
+                'Start re-transcription'
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 /* ── meeting actions (delete / merge / export) ─────────────────────────── */
-function MeetingActions({ meeting, meetings }) {
+function MeetingActions({ meeting, meetings, hasAudio, onOpenRetranscribe }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState(false); // false | 'pick' | 'busy'
@@ -226,6 +456,12 @@ function MeetingActions({ meeting, meetings }) {
             className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-sm text-ink hover:bg-surface-2 no-underline">
             <Icon.Download width={15} height={15} /> Export (markdown)
           </a>
+          {hasAudio && (
+            <button role="menuitem" onClick={() => { setOpen(false); onOpenRetranscribe?.(); }}
+              className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-sm text-ink hover:bg-surface-2">
+              <Icon.Mic width={15} height={15} /> Redo transcription…
+            </button>
+          )}
           <button role="menuitem" onClick={() => { setMode('pick'); setOpen(false); }} disabled={others.length === 0}
             className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-sm text-ink hover:bg-surface-2 disabled:opacity-40">
             <Icon.Merge width={15} height={15} /> Merge another meeting
@@ -288,10 +524,16 @@ function MeetingNav({ meetings, id }) {
 /* ── note document ────────────────────────────────────────────────────── */
 function Note({ data, todos, guildId, meetings, refetchTodos, onReload }) {
   const { meeting, summary, attendees, utterances, retry } = data;
+  const [retranscribeOpen, setRetranscribeOpen] = useState(false);
+  const [transcribeBusy, setTranscribeBusy] = useState(false);
+  const hasAudio = !!data.hasAudio;
+  const sttProviders = data.sttProviders || [];
   const notes = summary?.notes;
   const duration = fmtDuration(meeting.started_at, meeting.ended_at);
   const meetingTodos = todos.filter((t) => String(t.meeting_id) === String(meeting.id));
-  const isFailed = ['transcription_failed', 'summary_failed', 'processing'].includes(meeting.status);
+  const isFailed = ['transcription_failed', 'summary_failed'].includes(meeting.status);
+  const isProcessing = meeting.status === 'processing';
+  const isRecorded = meeting.status === 'recorded';
 
   return (
     <article className="max-w-[760px] mx-auto pb-12 animate-fade-up">
@@ -311,7 +553,24 @@ function Note({ data, todos, guildId, meetings, refetchTodos, onReload }) {
               {attendees?.length > 0 && <span className="inline-flex items-center gap-1.5"><Icon.Users width={14} height={14} />{attendees.length} attendees</span>}
             </p>
           </div>
-          <MeetingActions meeting={meeting} meetings={meetings} />
+          <div className="flex items-center gap-2">
+            {hasAudio && (
+              <button
+                onClick={() => setRetranscribeOpen(true)}
+                className="btn btn-ghost !py-1.5 text-xs text-muted hover:text-ink hidden sm:inline-flex items-center gap-1.5 border border-border"
+                title="Audio recording is saved on disk. Re-run transcription with another model."
+              >
+                <Icon.Mic width={14} height={14} />
+                <span>Redo transcription</span>
+              </button>
+            )}
+            <MeetingActions
+              meeting={meeting}
+              meetings={meetings}
+              hasAudio={hasAudio}
+              onOpenRetranscribe={() => setRetranscribeOpen(true)}
+            />
+          </div>
         </div>
 
         {attendees?.length > 0 && (
@@ -321,9 +580,40 @@ function Note({ data, todos, guildId, meetings, refetchTodos, onReload }) {
         )}
       </header>
 
-      {isFailed && <RetryBanner meeting={meeting} retry={retry} onDone={onReload} />}
+      {isProcessing && <ProcessingBanner />}
 
-      {!notes && !isFailed && <p className="text-sm text-muted mt-8">No summary available — status: {meeting.status}.</p>}
+      {isRecorded && (
+        <RecordedBanner
+          meeting={meeting}
+          busy={transcribeBusy}
+          onTranscribe={async () => {
+            setTranscribeBusy(true);
+            try {
+              const r = await api.retryMeeting(meeting.id);
+              if (r.ok) onReload?.();
+            } finally {
+              setTranscribeBusy(false);
+            }
+          }}
+          onOpenRetranscribe={() => setRetranscribeOpen(true)}
+        />
+      )}
+
+      {isFailed && (
+        <RetryBanner
+          meeting={meeting}
+          retry={retry}
+          hasAudio={hasAudio}
+          onOpenRetranscribe={() => setRetranscribeOpen(true)}
+          onDone={onReload}
+        />
+      )}
+
+      {!notes && !isFailed && !isProcessing && !isRecorded && (
+        <p className="text-sm text-muted mt-8">
+          {meeting.status === 'done' ? 'No summary generated (summarizer disabled for this server).' : `No summary available — status: ${meeting.status}.`}
+        </p>
+      )}
 
       {notes && (
         <>
@@ -413,6 +703,15 @@ function Note({ data, todos, guildId, meetings, refetchTodos, onReload }) {
       <Transcript utterances={utterances ?? []} />
       {guildId && <AskBox guildId={guildId} meetingId={meeting.id} />}
       <MeetingNav meetings={meetings} id={meeting.id} />
+
+      {retranscribeOpen && (
+        <RetranscribeModal
+          meeting={meeting}
+          sttProviders={sttProviders}
+          onClose={() => setRetranscribeOpen(false)}
+          onDone={onReload}
+        />
+      )}
     </article>
   );
 }
@@ -478,6 +777,15 @@ export default function Reading() {
       .finally(() => { if (!stale) setLoading(false); });
     return () => { stale = true; };
   }, [id, guildId]);
+
+  // When meeting is processing, poll automatically until complete
+  useEffect(() => {
+    if (!data?.meeting || data.meeting.status !== 'processing') return;
+    const timer = setInterval(() => {
+      reloadMeeting();
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [data?.meeting?.status, id, guildId]);
 
   if (loading || (!data && !error)) return <NoteSkeleton />;
   if (error) return <div className="px-8 py-10"><Empty icon={Icon.Doc} title="Couldn't load meeting" body={error} /></div>;

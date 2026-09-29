@@ -197,3 +197,30 @@ test('processMeeting reports delivered:true on a successful post', async () => {
   assert.equal(delivered, true);
   assert.equal(deliveryError, null);
 });
+
+test('processMeeting skips summarization and delivery when summarizerEnabled is false', async () => {
+  const { db, id } = seed();
+  let deliverCalled = false;
+  let summarizeCalled = false;
+  const customSummarizer = {
+    summarize: async () => {
+      summarizeCalled = true;
+      return { tldr: 'should not be called' };
+    },
+  };
+  const res = await processMeeting(db, id, {
+    tracks,
+    cfg: { summarizerProvider: 'fake', summarizerEnabled: false },
+    summarizer: customSummarizer,
+    transcribe: async () => ({ utterances: [{ userId: 'u1', displayName: 'Alice', startMs: 0, endMs: 1000, text: 'hi' }], failures: [] }),
+    deliver: async () => { deliverCalled = true; },
+  });
+  assert.equal(summarizeCalled, false);
+  assert.equal(deliverCalled, false);
+  assert.equal(res.notes, null);
+  assert.equal(db.getMeeting(id).status, 'done');
+  const summary = db.getSummary(id);
+  assert.ok(summary);
+  assert.equal(summary.notes, null);
+  assert.equal(summary.model_used, 'disabled');
+});

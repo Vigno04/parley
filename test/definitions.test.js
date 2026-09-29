@@ -13,10 +13,10 @@ test('search command has a required keyword option', () => {
   assert.equal(opt.required, true);
 });
 
-test('setup command exposes provider/model/fallback/stt/whisper/thread/autojoin/channel/language/summary_language options', () => {
+test('setup command exposes provider/model/fallback/stt/whisper/thread/autojoin/channel/language/summary_language/summarizer_enabled/auto_transcribe options', () => {
   const setup = commandsJSON().find((c) => c.name === 'setup');
   const names = setup.options.map((o) => o.name).sort();
-  assert.deepEqual(names, ['autojoin', 'fallback_model', 'fallback_provider', 'language', 'model', 'notes_channel', 'provider', 'stt_model', 'stt_provider', 'summary_language', 'thread', 'whisper_model']);
+  assert.deepEqual(names, ['auto_transcribe', 'autojoin', 'fallback_model', 'fallback_provider', 'language', 'model', 'notes_channel', 'provider', 'stt_model', 'stt_provider', 'summarizer_enabled', 'summary_language', 'thread', 'whisper_model']);
 });
 
 test('setup provider and model options are autocompleted, not choice-limited', () => {

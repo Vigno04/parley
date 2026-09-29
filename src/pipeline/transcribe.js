@@ -16,7 +16,7 @@ export async function transcribeTracks(tracks, cfg = {}, deps = {}) {
   // Resolve the configured STT provider (sidecar | openai) once per
   // meeting. The provider default can be overridden via deps.stt in tests.
   const transcribe = deps.transcribe || (!deps.stt ? getSTT(cfg, deps.db, deps.env, deps.sttDeps) : null);
-  const model = resolveSttModel(cfg);
+  const model = resolveSttModel(cfg, cfg?.sttProvider, deps.db);
   const stt = deps.stt || ((wav) => transcribe(wav, { model, language: cfg.language }));
   const cleanup = deps.cleanup || (async (p) => { try { await unlink(p); } catch { /* ignore */ } });
   const concurrency = Math.max(1, deps.concurrency ?? (cfg.sttProvider === 'openai' ? 4 : 2));
@@ -32,10 +32,12 @@ export async function transcribeTracks(tracks, cfg = {}, deps = {}) {
       const wavPath = t.pcmPath.replace(/\.pcm$/, '.wav');
       try {
         await convert(t.pcmPath, wavPath);
-        const { text, words } = await stt(wavPath, cfg);
+        const { text, words, duration } = await stt(wavPath, cfg);
         const clean = (text || '').trim();
         if (!clean) continue; // silent track — not a failure, just nothing said
-        const lastEnd = words && words.length ? words[words.length - 1].end : 0;
+        const lastEnd = words && words.length
+          ? words[words.length - 1].end
+          : (typeof duration === 'number' && duration > 0 ? duration : 0);
         results[i] = {
           userId: t.userId,
           displayName: t.displayName,

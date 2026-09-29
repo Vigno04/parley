@@ -75,3 +75,21 @@ test('setGuildConfig persists sttProvider + sttModel', () => {
   assert.equal(c.sttModel, 'whisper-1');
   assert.equal(c.whisperModel, DEFAULTS.whisperModel); // sidecar model untouched
 });
+
+test('summarizerEnabled defaults to true and can be toggled to false', () => {
+  const db = openDb(':memory:');
+  assert.equal(getGuildConfig(db, 'g').summarizerEnabled, true);
+  setGuildConfig(db, 'g', { summarizerEnabled: false });
+  assert.equal(getGuildConfig(db, 'g').summarizerEnabled, false);
+  setGuildConfig(db, 'g', { summarizerEnabled: true });
+  assert.equal(getGuildConfig(db, 'g').summarizerEnabled, true);
+});
+
+test('autoTranscribe defaults to true and can be toggled to false', () => {
+  const db = openDb(':memory:');
+  assert.equal(getGuildConfig(db, 'g').autoTranscribe, true);
+  setGuildConfig(db, 'g', { autoTranscribe: false });
+  assert.equal(getGuildConfig(db, 'g').autoTranscribe, false);
+  setGuildConfig(db, 'g', { autoTranscribe: true });
+  assert.equal(getGuildConfig(db, 'g').autoTranscribe, true);
+});

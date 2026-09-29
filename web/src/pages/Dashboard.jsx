@@ -61,7 +61,7 @@ export default function Dashboard() {
       api.todos(guildId, { open: true }),
     ]).then(([m, a, t]) => {
       if (stale) return;
-      setMeetings((Array.isArray(m) ? m : []).filter((x) => (x.utterance_count ?? 1) > 0));
+      setMeetings((Array.isArray(m) ? m : []).filter((x) => (x.utterance_count ?? 1) > 0 || ['recording', 'processing', 'recorded'].includes(x.status)));
       setAgg(a);
       setTodos(Array.isArray(t) ? t : []);
     }).catch((e) => { if (!stale) setError(e?.message || 'Failed to load'); });

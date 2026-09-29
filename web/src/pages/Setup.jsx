@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.js';
-import { useGuild } from '../GuildContext.jsx';
 import { useSystem } from '../SystemContext.jsx';
 import { Page, PageHead } from '../components/Page.jsx';
-import { Icon, Empty } from '../components/ui.jsx';
+import { Icon } from '../components/ui.jsx';
 import { ConnectionForm, BotStatusBadge } from '../components/Connection.jsx';
 
 const PROVIDER_KINDS = [
@@ -40,22 +39,6 @@ function Card({ title, desc, extra, children }) {
       </div>
       <div className="space-y-4">{children}</div>
     </section>
-  );
-}
-
-function Switch({ checked, onChange, label, desc }) {
-  return (
-    <label className="flex items-start justify-between gap-4 cursor-pointer select-none">
-      <span>
-        <span className="block text-[13px] font-medium text-ink">{label}</span>
-        {desc && <span className="block text-xs text-muted mt-0.5">{desc}</span>}
-      </span>
-      <span className="relative shrink-0 mt-0.5">
-        <input type="checkbox" checked={checked} onChange={onChange} className="peer sr-only" />
-        <span className="block h-6 w-10 rounded-full bg-surface-3 peer-checked:bg-primary transition-colors" />
-        <span className="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform peer-checked:translate-x-4" />
-      </span>
-    </label>
   );
 }
 
@@ -501,80 +484,25 @@ function ConnectionCard({ sys, onChanged }) {
 }
 
 export default function Setup() {
-  const { guildId } = useGuild();
   const { status: sys, refresh: refreshSys } = useSystem();
-  const [data, setData] = useState(null);
   const [providerList, setProviderList] = useState([]);
-  const [msg, setMsg] = useState('');
-  const [msgErr, setMsgErr] = useState(false);
 
-  const loadProviders = useCallback(() => {
+  const reload = useCallback(() => {
     api.providers().then(setProviderList).catch(() => setProviderList([]));
   }, []);
 
-  const reload = useCallback(() => {
-    loadProviders();
-    if (guildId) api.config(guildId).then(setData).catch(() => setData(null));
-  }, [guildId, loadProviders]);
-
   useEffect(() => { reload(); }, [reload]);
-
-  if (!guildId) return (
-    <Page max="720px">
-      <PageHead title="Settings" subtitle="Discord connection and per-server configuration." />
-      <div className="space-y-5">
-        <ConnectionCard sys={sys} onChanged={refreshSys} />
-        <ProvidersCard providers={providerList} onReload={reload} />
-        <div className="mt-5">
-          <Empty icon={Icon.Settings} title="No server selected" body="Pick a server from the top bar to configure server behavior." />
-        </div>
-      </div>
-    </Page>
-  );
-
-  if (!data) return (
-    <Page max="720px">
-      <div className="h-8 w-32 skeleton mb-7" />
-      <div className="space-y-5">{[0,1,2].map(i => <div key={i} className="h-44 skeleton rounded-[14px]" />)}</div>
-    </Page>
-  );
-
-  const { config: c } = data;
-
-  const save = async (patch) => {
-    try {
-      const r = await api.saveConfig(guildId, patch);
-      setData((d) => ({ ...d, config: r.config }));
-      setMsg('Saved'); setMsgErr(false);
-      return true;
-    } catch (e) {
-      setMsg(e.message); setMsgErr(true); return false;
-    } finally {
-      setTimeout(() => setMsg(''), 2400);
-    }
-  };
 
   return (
     <Page max="720px">
       <PageHead
         title="Settings"
-        subtitle="Per-server configuration. Applied instantly, no restart."
-        actions={msg && <span className={`text-sm font-medium ${msgErr ? 'text-error' : 'text-accent'}`}>{msg}</span>}
+        subtitle="Connect your bot, configure AI providers, and view system status."
       />
 
       <div className="space-y-5">
         <ConnectionCard sys={sys} onChanged={refreshSys} />
-
         <ProvidersCard providers={providerList} onReload={reload} />
-
-        <Card title="Behavior">
-          <Switch
-            checked={c?.autoJoin}
-            onChange={(e) => save({ autoJoin: e.target.checked })}
-            label="Auto-join voice"
-            desc="Join automatically when two or more people are in a voice channel."
-          />
-        </Card>
       </div>
     </Page>
   );

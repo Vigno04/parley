@@ -1,6 +1,12 @@
 import { readFile as fsReadFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 
+// Models that support verbose_json with word-level timestamps. The newer
+// gpt-4o-transcribe / gpt-4o-mini-transcribe models only accept 'json' and
+// ignore (or choke on) timestamp_granularities — sending verbose_json to them
+// causes undefined behaviour that frequently manifests as duplicated text.
+const VERBOSE_JSON_MODELS = new Set(['whisper-1']);
+
 // One adapter for every OpenAI-compatible speech-to-text endpoint
 // (POST {baseUrl}/audio/transcriptions). OpenAI and other OpenAI-compatible
 // providers speak this exact shape, so a single implementation covers them —
@@ -26,9 +32,17 @@ export function createOpenAICompatibleSTT({ baseUrl, apiKey, label = 'STT' }, de
       try {
         const form = new FormData();
         form.append('file', new Blob([bytes]), basename(filePath));
-        form.append('model', opts.model || 'whisper-large-v3-turbo');
-        form.append('response_format', 'verbose_json');
-        form.append('timestamp_granularities[]', 'word');
+        const model = opts.model || 'whisper-large-v3-turbo';
+        form.append('model', model);
+        // Only request verbose_json + word timestamps for models that support
+        // them. The gpt-4o-transcribe family only accepts 'json'; sending
+        // verbose_json there produces garbled / duplicated output.
+        if (VERBOSE_JSON_MODELS.has(model)) {
+          form.append('response_format', 'verbose_json');
+          form.append('timestamp_granularities[]', 'word');
+        } else {
+          form.append('response_format', 'json');
+        }
         // Whisper auto-detects language when none is supplied; only pin it when
         // the user picked a specific ISO code (our 'auto' sentinel means detect).
         if (opts.language && opts.language !== 'auto') form.append('language', opts.language);
@@ -55,7 +69,7 @@ export function createOpenAICompatibleSTT({ baseUrl, apiKey, label = 'STT' }, de
 // Prefer top-level word timestamps; fall back to deriving them from segments so
 // downstream endMs math still works even if a provider omits the words array.
 export function normalize(json) {
-  const text = (json?.text || '').trim();
+  const text = dedup((json?.text || '').trim());
   let words = Array.isArray(json?.words)
     ? json.words.map((w) => ({ word: w.word, start: w.start, end: w.end }))
     : [];
@@ -65,4 +79,23 @@ export function normalize(json) {
       .map((s) => ({ word: s.text, start: s.start, end: s.end }));
   }
   return { text, words, language: json?.language };
+}
+
+// Whisper-family models occasionally hallucinate by repeating the same sentence
+// (or short phrase) multiple times in a row, especially when the audio has
+// trailing silence. Strip consecutive duplicate sentences so the transcript
+// stays clean. Only removes *exact* consecutive repetitions to avoid false
+// positives on intentionally repeated speech ("go go go").
+export function dedup(text) {
+  if (!text) return text;
+  // Split on sentence-ending punctuation while keeping the delimiter attached.
+  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g);
+  if (!sentences || sentences.length <= 1) return text;
+  const out = [sentences[0]];
+  for (let i = 1; i < sentences.length; i++) {
+    if (sentences[i].trim() !== sentences[i - 1].trim()) {
+      out.push(sentences[i]);
+    }
+  }
+  return out.join('').trim();
 }

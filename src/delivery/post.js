@@ -2,6 +2,7 @@ import { ChannelType } from 'discord.js';
 import { renderNotes, chunk } from './discord-notes.js';
 
 export async function postNotes({ client, meeting, cfg, notes, talktime }) {
+  if (!notes) return;
   const channelId = cfg.notesChannelId || meeting.channel_id;
   const channel = await client.channels.fetch(channelId).catch(() => null);
   // Throw rather than silently dropping the notes: the pipeline records this as

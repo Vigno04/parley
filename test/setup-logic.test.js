@@ -183,3 +183,37 @@ test('switching provider with empty model clears summarizerModel', () => {
   assert.equal(r.patch.summarizerProvider, 'local-llm');
   assert.equal(r.patch.summarizerModel, null);
 });
+
+test('accepts summarizerEnabled boolean flag', () => {
+  const r1 = validateSetup({ summarizerEnabled: false }, env);
+  assert.equal(r1.ok, true);
+  assert.equal(r1.patch.summarizerEnabled, false);
+
+  const r2 = validateSetup({ summarizer_enabled: true }, env);
+  assert.equal(r2.ok, true);
+  assert.equal(r2.patch.summarizerEnabled, true);
+});
+
+test('accepts valid recordingRetention and rejects invalid', () => {
+  const r1 = validateSetup({ recordingRetention: '7d' }, env);
+  assert.equal(r1.ok, true);
+  assert.equal(r1.patch.recordingRetention, '7d');
+
+  const r2 = validateSetup({ recording_retention: 'never' }, env);
+  assert.equal(r2.ok, true);
+  assert.equal(r2.patch.recordingRetention, 'never');
+
+  const r3 = validateSetup({ recordingRetention: 'invalid-val' }, env);
+  assert.equal(r3.ok, false);
+  assert.match(r3.error, /recording retention/i);
+});
+
+test('accepts autoTranscribe boolean flag', () => {
+  const r1 = validateSetup({ autoTranscribe: false }, env);
+  assert.equal(r1.ok, true);
+  assert.equal(r1.patch.autoTranscribe, false);
+
+  const r2 = validateSetup({ auto_transcribe: true }, env);
+  assert.equal(r2.ok, true);
+  assert.equal(r2.patch.autoTranscribe, true);
+});

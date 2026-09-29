@@ -66,3 +66,40 @@ test('reconcileOnBoot is a no-op when the audio root does not exist', async () =
   assert.equal(r.sweptDirs, 0);
   assert.equal(r.orphanMeetings, 0);
 });
+
+test('sweepExpiredAudio respects recordingRetention policy (never, duration, immediately)', async () => {
+  const { dir, cleanup } = tmp();
+  try {
+    const db = openDb(':memory:');
+    const audioRoot = join(dir, 'audio');
+    const { setGuildConfig } = await import('../src/store/config.js');
+
+    // Guild with 'never'
+    setGuildConfig(db, 'g-never', { recordingRetention: 'never' });
+    const neverId = db.createMeeting({ guildId: 'g-never', channelId: 'c', channelName: 'x', startedAt: '2020-01-01T00:00:00Z' });
+    db.setMeetingStatus(neverId, 'done');
+
+    // Guild with '1d' - meeting from 2 hours ago (not expired)
+    setGuildConfig(db, 'g-1d', { recordingRetention: '1d' });
+    const freshId = db.createMeeting({ guildId: 'g-1d', channelId: 'c', channelName: 'x', startedAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString() });
+    db.setMeetingStatus(freshId, 'done');
+
+    // Meeting from 2 days ago (expired)
+    const expiredId = db.createMeeting({ guildId: 'g-1d', channelId: 'c', channelName: 'x', startedAt: new Date(Date.now() - 48 * 3600 * 1000).toISOString() });
+    db.setMeetingStatus(expiredId, 'done');
+
+    for (const id of [neverId, freshId, expiredId]) {
+      const d = join(audioRoot, String(id));
+      mkdirSync(d, { recursive: true });
+      writeFileSync(join(d, 'u1_0.pcm'), 'x');
+    }
+
+    const { sweepExpiredAudio } = await import('../src/store/reconcile.js');
+    const swept = await sweepExpiredAudio(db, audioRoot, { log: quiet });
+    assert.equal(swept, 1);
+    assert.equal(existsSync(join(audioRoot, String(neverId))), true);
+    assert.equal(existsSync(join(audioRoot, String(freshId))), true);
+    assert.equal(existsSync(join(audioRoot, String(expiredId))), false);
+  } finally { cleanup(); }
+});
+

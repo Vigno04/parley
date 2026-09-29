@@ -36,7 +36,10 @@ CREATE TABLE IF NOT EXISTS guild_config (
   summarizer_fallback_provider TEXT, summarizer_fallback_model TEXT,
   stt_provider TEXT, stt_model TEXT,
   whisper_model TEXT, notes_channel_id TEXT,
-  use_thread INTEGER, auto_join INTEGER, language TEXT, summary_language TEXT
+  use_thread INTEGER, auto_join INTEGER, language TEXT, summary_language TEXT,
+  recording_retention TEXT,
+  summarizer_enabled INTEGER DEFAULT 1,
+  auto_transcribe INTEGER DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS guilds (
   guild_id TEXT PRIMARY KEY,
@@ -106,6 +109,18 @@ export function openDb(path) {
   }
   if (!cols.some((c) => c.name === 'summarizer_fallback_model')) {
     sql.exec(`ALTER TABLE guild_config ADD COLUMN summarizer_fallback_model TEXT`);
+  }
+  // Migration: add recording_retention to guild_config
+  if (!cols.some((c) => c.name === 'recording_retention')) {
+    sql.exec(`ALTER TABLE guild_config ADD COLUMN recording_retention TEXT`);
+  }
+  // Migration: add summarizer_enabled to guild_config
+  if (!cols.some((c) => c.name === 'summarizer_enabled')) {
+    sql.exec(`ALTER TABLE guild_config ADD COLUMN summarizer_enabled INTEGER DEFAULT 1`);
+  }
+  // Migration: add auto_transcribe to guild_config
+  if (!cols.some((c) => c.name === 'auto_transcribe')) {
+    sql.exec(`ALTER TABLE guild_config ADD COLUMN auto_transcribe INTEGER DEFAULT 1`);
   }
   // Migration: add per-stage timing metrics to dbs created before this column
   // existed (Measurement section of the speed plan).
@@ -254,15 +269,19 @@ export function openDb(path) {
       sql.prepare(
         `INSERT OR REPLACE INTO summaries (meeting_id, notes_json, talktime_json, model_used, timings_json, created_at)
          VALUES (?, ?, ?, ?, ?, ?)`
-      ).run(meetingId, JSON.stringify(notes), JSON.stringify(talktime), modelUsed, timings ? JSON.stringify(timings) : null, createdAt);
+      ).run(meetingId, notes ? JSON.stringify(notes) : null, JSON.stringify(talktime || []), modelUsed, timings ? JSON.stringify(timings) : null, createdAt);
     },
     getSummary(meetingId) {
       const row = sql.prepare(`SELECT * FROM summaries WHERE meeting_id = ?`).get(meetingId);
       if (!row) return null;
       const { notes_json, talktime_json, timings_json, ...rest } = row;
       let timings = null;
+      let notes = null;
+      let talktime = [];
       try { if (timings_json) timings = JSON.parse(timings_json); } catch { /* null-safe */ }
-      return { ...rest, notes: JSON.parse(notes_json), talktime: JSON.parse(talktime_json), timings };
+      try { if (notes_json) notes = JSON.parse(notes_json); } catch { /* null-safe */ }
+      try { if (talktime_json) talktime = JSON.parse(talktime_json); } catch { /* null-safe */ }
+      return { ...rest, notes, talktime, timings };
     },
     seedTodos(meetingId, guildId, actionItems, createdAt = new Date().toISOString()) {
       const stmt = sql.prepare(
@@ -330,7 +349,10 @@ export function openDb(path) {
       ).all();
       let n = 0;
       for (const row of rows) {
-        const notes = JSON.parse(row.notes_json);
+        if (!row.notes_json) continue;
+        let notes = null;
+        try { notes = JSON.parse(row.notes_json); } catch { /* ignore parse error */ }
+        if (!notes) continue;
         n += this.seedTodos(row.meeting_id, row.guild_id, notes.actionItems || [], row.created_at);
       }
       // Repair pass: realign any existing todo whose created_at drifted from its

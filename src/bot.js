@@ -17,9 +17,16 @@ import { validateSetup } from './commands/setup-logic.js';
 import { handleAutocomplete } from './commands/autocomplete.js';
 import { renderNotes, chunk } from './delivery/discord-notes.js';
 import { postNotes } from './delivery/post.js';
+import { sweepExpiredAudio } from './store/reconcile.js';
 
 export function startBot({ db, audioRoot }) {
   validateEnv(); // throws with a clear message if token/client id are missing
+
+  // Periodic sweep of expired audio files according to per-server retention policy
+  const sweepTimer = setInterval(() => {
+    sweepExpiredAudio(db, audioRoot).catch((err) => console.warn('[retention] sweep error:', err.message));
+  }, 60 * 60 * 1000);
+  sweepTimer.unref?.();
 
   // Verbose voice-lifecycle logging (gateway raw packets, [vSU]/[voice]/[join]
   // traces) is noisy in production; gate it behind DEBUG_VOICE=1. Errors,
@@ -53,15 +60,25 @@ export function startBot({ db, audioRoot }) {
     finalize: async (meetingId, tracks, session) => {
       const meeting = db.getMeeting(meetingId);
       const cfg = getGuildConfig(db, meeting.guild_id);
+      if (cfg.autoTranscribe === false) {
+        console.log(`[bot] meeting ${meetingId}: autoTranscribe is disabled, preserving audio on disk and setting status to 'recorded'`);
+        db.setMeetingStatus(meetingId, 'recorded', new Date().toISOString());
+        const ch = await client.channels.fetch(cfg.notesChannelId || meeting.channel_id).catch(() => null);
+        if (ch) await ch.send(`🎙️ Meeting recording finished (${tracks.length} speaker track${tracks.length === 1 ? '' : 's'}). Ready to transcribe in the dashboard.`).catch(() => {});
+        return;
+      }
       try {
+        const summarizer = cfg.summarizerEnabled !== false ? getSummarizer(cfg, db) : null;
         const result = await processMeeting(db, meetingId, {
           tracks,
           cfg,
-          summarizer: getSummarizer(cfg, db),
+          summarizer,
           deliver: async (notes, talktime) => postNotes({ client, meeting, cfg, notes, talktime }),
         });
-        // Success: delete the meeting's audio. On failure we keep the PCM for manual retry.
-        await rm(session.audioDir, { recursive: true, force: true }).catch(() => {});
+        // Audio retention: only delete immediately if configured, otherwise keep for retranscription
+        if ((cfg.recordingRetention || 'immediately') === 'immediately') {
+          await rm(session.audioDir, { recursive: true, force: true }).catch(() => {});
+        }
         // Nobody spoke — drop the empty meeting record entirely.
         if (result?.empty) db.deleteMeeting(meetingId);
         // Summary succeeded but posting didn't (perms/deleted channel): the notes
@@ -372,6 +389,8 @@ export function startBot({ db, audioRoot }) {
           autoJoin: interaction.options.getBoolean('autojoin') ?? undefined,
           language: interaction.options.getString('language') ?? undefined,
           summary_language: interaction.options.getString('summary_language') ?? undefined,
+          summarizer_enabled: interaction.options.getBoolean('summarizer_enabled') ?? undefined,
+          auto_transcribe: interaction.options.getBoolean('auto_transcribe') ?? undefined,
         };
         const result = validateSetup(input, db);
         if (!result.ok) return interaction.reply({ content: `❌ ${result.error}`, ephemeral: true });

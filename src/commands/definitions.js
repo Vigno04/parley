@@ -33,7 +33,9 @@ export function buildCommands() {
       .addStringOption((o) => o.setName('language').setDescription('Spoken language (pick German to fix DE/EN mixing)')
         .addChoices(...LANGUAGES.map((l) => ({ name: l.name, value: l.code })), { name: 'Auto-detect', value: 'auto' }))
       .addStringOption((o) => o.setName('summary_language').setDescription('Language for the notes/summary')
-        .addChoices(...LANGUAGES.map((l) => ({ name: l.name, value: l.code })), { name: 'Match transcription', value: 'match' })),
+        .addChoices(...LANGUAGES.map((l) => ({ name: l.name, value: l.code })), { name: 'Match transcription', value: 'match' }))
+      .addBooleanOption((o) => o.setName('summarizer_enabled').setDescription('Enable or disable meeting summarization'))
+      .addBooleanOption((o) => o.setName('auto_transcribe').setDescription('Start transcription immediately when meeting finishes')),
   ];
 }
 

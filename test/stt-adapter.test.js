@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createOpenAICompatibleSTT, normalize } from '../src/adapters/stt/openai-compatible.js';
+import { createOpenAICompatibleSTT, normalize, dedup } from '../src/adapters/stt/openai-compatible.js';
 import {
   getSTT, resolveSttModel, sttProviderReady, availableSttProviders,
   STT_PROVIDERS, STT_MODELS,
@@ -45,9 +45,32 @@ test('normalize tolerates an empty/garbage body', () => {
   assert.deepEqual(normalize({}), { text: '', words: [], language: undefined });
 });
 
+// ── dedup ────────────────────────────────────────────────────────────────────
+
+test('dedup strips consecutive repeated sentences', () => {
+  assert.equal(dedup('Hello world. Hello world. Goodbye.'), 'Hello world. Goodbye.');
+});
+
+test('dedup keeps non-consecutive repetitions', () => {
+  assert.equal(dedup('A. B. A.'), 'A. B. A.');
+});
+
+test('dedup handles single sentence', () => {
+  assert.equal(dedup('Hello world.'), 'Hello world.');
+});
+
+test('dedup handles empty/falsy input', () => {
+  assert.equal(dedup(''), '');
+  assert.equal(dedup(null), null);
+});
+
+test('dedup removes triple+ repetitions', () => {
+  assert.equal(dedup('Yes! Yes! Yes! No.'), 'Yes! No.');
+});
+
 // ── createOpenAICompatibleSTT ────────────────────────────────────────────────
 
-test('openai-compatible posts to /audio/transcriptions with bearer + verbose_json', async () => {
+test('openai-compatible posts to /audio/transcriptions with bearer + verbose_json for whisper-1', async () => {
   const { fetchImpl, calls } = captureFetch([{ ok: true, status: 200, body: { text: 'hello', words: [{ word: 'hello', start: 0, end: 1 }] } }]);
   const stt = createOpenAICompatibleSTT(
     { baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-test', label: 'OpenAI STT' },
@@ -62,6 +85,19 @@ test('openai-compatible posts to /audio/transcriptions with bearer + verbose_jso
   assert.equal(form.get('model'), 'whisper-1');
   assert.equal(form.get('response_format'), 'verbose_json');
   assert.equal(form.get('language'), 'en');
+});
+
+test('openai-compatible uses json format (not verbose_json) for gpt-4o-transcribe', async () => {
+  const { fetchImpl, calls } = captureFetch([{ ok: true, status: 200, body: { text: 'hi there' } }]);
+  const stt = createOpenAICompatibleSTT(
+    { baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-test' },
+    { fetchImpl, readFile: fakeRead },
+  );
+  const out = await stt('/tmp/a.wav', { model: 'gpt-4o-transcribe' });
+  assert.equal(out.text, 'hi there');
+  const form = calls[0].init.body;
+  assert.equal(form.get('response_format'), 'json');
+  assert.equal(form.get('timestamp_granularities[]'), null);
 });
 
 test('openai-compatible omits language when auto', async () => {
