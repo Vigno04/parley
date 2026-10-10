@@ -39,8 +39,8 @@ CREATE TABLE IF NOT EXISTS guild_config (
   use_thread INTEGER, auto_join INTEGER, language TEXT, summary_language TEXT,
   recording_retention TEXT,
   summarizer_enabled INTEGER DEFAULT 1,
-  auto_transcribe INTEGER DEFAULT 1
-);
+  auto_transcribe INTEGER DEFAULT 1,
+  summary_prompt TEXT);
 CREATE TABLE IF NOT EXISTS guilds (
   guild_id TEXT PRIMARY KEY,
   name TEXT,
@@ -94,6 +94,9 @@ export function openDb(path) {
   const cols = sql.prepare(`PRAGMA table_info(guild_config)`).all();
   if (!cols.some((c) => c.name === 'summary_language')) {
     sql.exec(`ALTER TABLE guild_config ADD COLUMN summary_language TEXT`);
+  }
+  if (!cols.some((c) => c.name === 'summary_prompt')) {
+    sql.exec(`ALTER TABLE guild_config ADD COLUMN summary_prompt TEXT`);
   }
   // Migration: add cloud STT columns to dbs created before they existed.
   if (!cols.some((c) => c.name === 'stt_provider')) {

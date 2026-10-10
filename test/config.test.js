@@ -61,6 +61,20 @@ test('setGuildConfig persists summaryLanguage', () => {
   assert.equal(getGuildConfig(db, 'g').summaryLanguage, 'de');
 });
 
+test('summary prompt stays NULL (built-in) until a guild writes its own', () => {
+  const db = openDb(':memory:');
+  const stored = (g) => db.sql.prepare(`SELECT summary_prompt FROM guild_config WHERE guild_id = ?`).get(g).summary_prompt;
+  assert.equal(getGuildConfig(db, 'g1').summaryPrompt, null);
+  // Saving an unrelated setting must not snapshot the built-in prompt into the row.
+  setGuildConfig(db, 'g1', { language: 'de' });
+  assert.equal(stored('g1'), null);
+  setGuildConfig(db, 'g1', { summaryPrompt: 'Return concise JSON notes.' });
+  setGuildConfig(db, 'g1', { language: 'fr' });
+  assert.equal(getGuildConfig(db, 'g1').summaryPrompt, 'Return concise JSON notes.');
+  setGuildConfig(db, 'g1', { summaryPrompt: null });
+  assert.equal(stored('g1'), null);
+});
+
 test('sttProvider defaults to sidecar', () => {
   const db = openDb(':memory:');
   assert.equal(getGuildConfig(db, 'g').sttProvider, 'sidecar');

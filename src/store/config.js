@@ -16,6 +16,9 @@ export const DEFAULTS = {
   language: 'auto',
   summaryLanguage: 'en',
   recordingRetention: 'immediately',
+  // null = the built-in SUMMARY_PROMPT (notes.js), resolved at summarize time so
+  // prompt improvements reach every server that hasn't written its own.
+  summaryPrompt: null,
 };
 
 const COLS = {
@@ -34,6 +37,7 @@ const COLS = {
   language: 'language',
   summaryLanguage: 'summary_language',
   recordingRetention: 'recording_retention',
+  summaryPrompt: 'summary_prompt',
 };
 
 function fromRow(row) {
@@ -53,6 +57,7 @@ function fromRow(row) {
     language: row.language ?? DEFAULTS.language,
     summaryLanguage: row.summary_language ?? DEFAULTS.summaryLanguage,
     recordingRetention: row.recording_retention ?? DEFAULTS.recordingRetention,
+    summaryPrompt: row.summary_prompt ?? DEFAULTS.summaryPrompt,
   };
 }
 
@@ -69,8 +74,8 @@ export function setGuildConfig(db, guildId, patch) {
   const merged = { ...current, ...safePatch, guildId };
   db.sql.prepare(
     `INSERT OR REPLACE INTO guild_config
-       (guild_id, summarizer_enabled, auto_transcribe, summarizer_provider, summarizer_model, summarizer_fallback_provider, summarizer_fallback_model, stt_provider, stt_model, whisper_model, notes_channel_id, use_thread, auto_join, language, summary_language, recording_retention)
-     VALUES (@guildId, @summarizerEnabled, @autoTranscribe, @summarizerProvider, @summarizerModel, @summarizerFallbackProvider, @summarizerFallbackModel, @sttProvider, @sttModel, @whisperModel, @notesChannelId, @useThread, @autoJoin, @language, @summaryLanguage, @recordingRetention)`
+       (guild_id, summarizer_enabled, auto_transcribe, summarizer_provider, summarizer_model, summarizer_fallback_provider, summarizer_fallback_model, stt_provider, stt_model, whisper_model, notes_channel_id, use_thread, auto_join, language, summary_language, recording_retention, summary_prompt)
+     VALUES (@guildId, @summarizerEnabled, @autoTranscribe, @summarizerProvider, @summarizerModel, @summarizerFallbackProvider, @summarizerFallbackModel, @sttProvider, @sttModel, @whisperModel, @notesChannelId, @useThread, @autoJoin, @language, @summaryLanguage, @recordingRetention, @summaryPrompt)`
   ).run({
     guildId,
     summarizerEnabled: merged.summarizerEnabled ? 1 : 0,
@@ -88,6 +93,7 @@ export function setGuildConfig(db, guildId, patch) {
     language: merged.language,
     summaryLanguage: merged.summaryLanguage,
     recordingRetention: merged.recordingRetention,
+    summaryPrompt: merged.summaryPrompt,
   });
   return merged;
 }

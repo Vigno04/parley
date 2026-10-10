@@ -11,9 +11,9 @@ import { askMeeting } from '../adapters/summarizer/ask.js';
 import { getSummarizer } from '../adapters/summarizer/index.js';
 import { buildTranscript, computeTalkTime } from '../pipeline/summarize.js';
 import { resolveSummaryLanguage } from '../adapters/summarizer/languages.js';
+import { SUMMARY_PROMPT } from '../adapters/summarizer/notes.js';
 import { listModels, clearModelCache, DEFAULT_MODELS } from '../adapters/summarizer/models.js';
-import { connectionStatus, setConnection } from '../store/secrets.js';
-import { COMMAND_CATALOG } from '../commands/definitions.js';
+import { connectionStatus, setConnection } from '../store/secrets.js';import { COMMAND_CATALOG } from '../commands/definitions.js';
 import { retryMeeting, retranscribeMeeting, retryPlan, RETRYABLE_STATUSES } from '../pipeline/retry.js';
 import { availableSttProviders } from '../adapters/stt/index.js';
 import { requireAdmin } from './auth.js';
@@ -249,6 +249,7 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
       channelName: target.channel_name, date: target.started_at,
       attendees: db.listAttendees(targetId).map((a) => a.display_name),
       summaryLanguage: resolveSummaryLanguage(cfg),
+      summaryPrompt: cfg.summaryPrompt,
     };
     try {
       const summarizer = getSummarizer(cfg, db);
@@ -298,9 +299,9 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     }
     res.json({
       config: getGuildConfig(db, req.params.g),
+defaultSummaryPrompt: SUMMARY_PROMPT,
       providers: provs,
-      sttProviders: availableSttProviders(db, env),
-      channels,
+      sttProviders: availableSttProviders(db, env),      channels,
       secrets,
       defaultModels: DEFAULT_MODELS,
       languages: LANGUAGES,

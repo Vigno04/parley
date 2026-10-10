@@ -115,6 +115,61 @@ function ProviderModelRow({ providerValue, modelValue, providerOptions, label, p
   );
 }
 
+function PromptEditor({ value, defaultValue, onSave }) {
+  const current = value ?? defaultValue;
+  const [draft, setDraft] = useState(current);
+  const [busy, setBusy] = useState(false);
+  const changed = draft !== current;
+  useEffect(() => { setDraft(current); }, [current]);
+
+  async function savePrompt(next) {
+    setBusy(true);
+    const ok = await onSave({ summaryPrompt: next });
+    if (ok) setDraft(next ?? defaultValue);
+    setBusy(false);
+  }
+
+  return (
+    <Field label="Summary prompt" hint="Instructions sent to the summarizer before the meeting details and transcript. Keep the JSON output shape if you want structured notes and todos.">
+      <textarea
+        className="input min-h-64 font-mono text-xs resize-y"
+        aria-label="Summary prompt"
+        value={draft || ''}
+        onChange={(e) => setDraft(e.target.value)}
+        maxLength={20000}
+      />
+      <div className="flex flex-wrap gap-2 mt-2">
+        <button
+          type="button"
+          className="btn btn-primary !py-1.5"
+          disabled={busy || !changed || !draft?.trim()}
+          onClick={() => savePrompt(draft?.trim())}
+        >
+          Save prompt
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost !py-1.5"
+          disabled={busy || value == null}
+          onClick={() => savePrompt(null)}
+        >
+          Restore default
+        </button>
+        {changed && (
+          <button
+            type="button"
+            className="btn btn-ghost !py-1.5"
+            disabled={busy}
+            onClick={() => setDraft(current)}
+          >
+            Discard changes
+          </button>
+        )}
+      </div>
+    </Field>
+  );
+}
+
 export default function ServerSettings() {
   const { guildId, guilds } = useGuild();
   const [data, setData] = useState(null);
@@ -426,6 +481,10 @@ export default function ServerSettings() {
                   <Chevron />
                 </div>
               </Field>
+            </div>
+
+            <div className="border-t border-border pt-4">
+              <PromptEditor key={guildId} value={c?.summaryPrompt} defaultValue={data?.defaultSummaryPrompt} onSave={save} />
             </div>
           </div>
         </Card>

@@ -157,6 +157,16 @@ export function validateSetup(input, dbOrEnv) {
     patch.autoTranscribe = !!autoTranscribeInput;
   }
 
+  if (input.summaryPrompt === null) {
+    patch.summaryPrompt = null; // restore the built-in prompt
+  } else if (input.summaryPrompt !== undefined) {
+    const prompt = typeof input.summaryPrompt === 'string' ? input.summaryPrompt.trim() : '';
+    if (!prompt || prompt.length > 20000) {
+      return { ok: false, error: 'Summary prompt must be non-empty text of at most 20,000 characters.' };
+    }
+    patch.summaryPrompt = prompt;
+  }
+
   return { ok: true, patch };
 }
 
