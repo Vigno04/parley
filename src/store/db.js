@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS guild_config (
   recording_retention TEXT,
   summarizer_enabled INTEGER DEFAULT 1,
   auto_transcribe INTEGER DEFAULT 1,
-  summary_prompt TEXT);
+  summary_prompt TEXT,
+  stt_prompt TEXT);
 CREATE TABLE IF NOT EXISTS guilds (
   guild_id TEXT PRIMARY KEY,
   name TEXT,
@@ -97,6 +98,9 @@ export function openDb(path) {
   }
   if (!cols.some((c) => c.name === 'summary_prompt')) {
     sql.exec(`ALTER TABLE guild_config ADD COLUMN summary_prompt TEXT`);
+  }
+  if (!cols.some((c) => c.name === 'stt_prompt')) {
+    sql.exec(`ALTER TABLE guild_config ADD COLUMN stt_prompt TEXT`);
   }
   // Migration: add cloud STT columns to dbs created before they existed.
   if (!cols.some((c) => c.name === 'stt_provider')) {
@@ -198,6 +202,20 @@ export function openDb(path) {
     clearSummary(meetingId) {
       sql.prepare(`DELETE FROM summaries WHERE meeting_id = ?`).run(meetingId);
       sql.prepare(`DELETE FROM todos WHERE meeting_id = ?`).run(meetingId);
+    },
+    // Clear generated transcript + summary + todos while keeping the meeting row & audio intact.
+    clearMeetingGeneratedData(meetingId) {
+      sql.exec('BEGIN');
+      try {
+        sql.prepare(`DELETE FROM utterances WHERE meeting_id = ?`).run(meetingId);
+        sql.prepare(`DELETE FROM summaries WHERE meeting_id = ?`).run(meetingId);
+        sql.prepare(`DELETE FROM todos WHERE meeting_id = ?`).run(meetingId);
+        sql.prepare(`UPDATE meetings SET status = 'recorded', transcription_complete = NULL WHERE id = ?`).run(meetingId);
+        sql.exec('COMMIT');
+      } catch (e) {
+        sql.exec('ROLLBACK');
+        throw e;
+      }
     },
     setMeetingStatus(id, status, endedAt = null) {
       // ended_at only fills in when still null: the recording-stop timestamp

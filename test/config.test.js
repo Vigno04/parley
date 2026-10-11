@@ -107,3 +107,11 @@ test('autoTranscribe defaults to true and can be toggled to false', () => {
   setGuildConfig(db, 'g', { autoTranscribe: true });
   assert.equal(getGuildConfig(db, 'g').autoTranscribe, true);
 });
+
+test('sttPrompt defaults to null and can be configured', () => {
+  const db = openDb(':memory:');
+  assert.equal(getGuildConfig(db, 'g').sttPrompt, null);
+  setGuildConfig(db, 'g', { sttPrompt: 'Neverwinter, Faerun' });
+  assert.equal(getGuildConfig(db, 'g').sttPrompt, 'Neverwinter, Faerun');
+});
+

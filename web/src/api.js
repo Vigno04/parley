@@ -38,7 +38,7 @@ export const api = {
   stopLive: (g, channelId) => fetch(`/api/guilds/${g}/live/${channelId}/stop`, { method: 'POST' }).then(json),
   stats: (g) => fetch(`/api/guilds/${g}/stats`).then(json),
   meeting: (id) => fetch(`/api/meetings/${id}`).then(json),
-  // Export URL for a download link/button (md or json). Not fetched via json().
+  meetingProgress: (id) => fetch(`/api/meetings/${id}/progress`).then(json),
   exportMeetingUrl: (id, format = 'md') => `/api/meetings/${id}/export?format=${format}`,
   todos: (g, { open, assignee } = {}) => {
     const p = new URLSearchParams();
@@ -51,10 +51,19 @@ export const api = {
   ask: (g, id, question) => fetch(`/api/guilds/${g}/meetings/${id}/ask`, jsonBody('POST', { question })).then(json),
   setTodoDone: (id, done) => fetch(`/api/todos/${id}`, jsonBody('PATCH', { done })).then(json),
   deleteMeeting: (id) => fetch(`/api/meetings/${id}`, { method: 'DELETE' }).then(json),
+  deleteAudio: (id) => fetch(`/api/meetings/${id}/audio`, { method: 'DELETE' }).then(json),
   mergeMeetings: (id, sourceIds) => fetch(`/api/meetings/${id}/merge`, jsonBody('POST', { sourceIds })).then(json),
   search: (g, q) => fetch(`/api/guilds/${g}/search?q=${encodeURIComponent(q)}`).then(json),
   retryMeeting: (id) => fetch(`/api/meetings/${id}/retry`, { method: 'POST' }).then(json),
   retranscribeMeeting: (id, opts = {}) => fetch(`/api/meetings/${id}/retranscribe`, jsonBody('POST', opts)).then(json),
+  compareTranscribe: (id, payload, signal) => fetch(`/api/meetings/${id}/compare-transcribe`, { ...jsonBody('POST', payload), signal }).then(json),
+  compareStatus: (id) => fetch(`/api/meetings/${id}/compare-status`).then(json),
+  compareCancel: (id) => fetch(`/api/meetings/${id}/compare-cancel`, { method: 'POST' }).then(json),
+  applyTranscription: (id, payload) => fetch(`/api/meetings/${id}/apply-transcription`, jsonBody('POST', payload)).then(json),
+  audioTracks: (id) => fetch(`/api/meetings/${id}/audio-tracks`).then(json),
+  audioClipUrl: (id, userId, startMs) => `/api/meetings/${id}/audio-clip?userId=${encodeURIComponent(userId)}&startMs=${startMs}`,
+  clearGeneratedData: (id) => fetch(`/api/meetings/${id}/clear-generated`, { method: 'POST' }).then(json),
+  sttProviders: () => fetch('/api/stt-providers').then(json),
   commands: () => fetch('/api/commands').then(json),
   config: (g) => fetch(`/api/guilds/${g}/config`).then(json),
   saveConfig: (g, patch) => fetch(`/api/guilds/${g}/config`, jsonBody('PATCH', patch)).then(json),

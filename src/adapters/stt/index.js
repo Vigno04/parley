@@ -1,6 +1,7 @@
 import { config as envConfig } from '../../config/env.js';
 import { createSidecarSTT } from './sidecar.js';
 import { createOpenAICompatibleSTT } from './openai-compatible.js';
+import { createLlmSTT } from './llm.js';
 
 export const WHISPER_MODELS = ['tiny', 'base', 'small', 'medium', 'large-v3', 'large-v3-turbo'];
 export const STT_PROVIDERS = ['sidecar', 'openai'];
@@ -9,9 +10,40 @@ export const STT_MODELS = {
   openai: ['whisper-1', 'gpt-4o-transcribe', 'gpt-4o-mini-transcribe'],
 };
 
-export function resolveSttModel(cfg, provider = cfg?.sttProvider) {
+export function parseProviderModels(modelsData) {
+  if (!modelsData) return [];
+  let parsed;
+  if (Array.isArray(modelsData)) {
+    parsed = modelsData;
+  } else if (typeof modelsData === 'string') {
+    try {
+      parsed = JSON.parse(modelsData);
+    } catch {
+      parsed = modelsData.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
+    }
+  } else {
+    return [];
+  }
+  return (Array.isArray(parsed) ? parsed : []).map((m) => {
+    if (typeof m === 'string') {
+      return { id: m, caps: ['stt', 'summarizer'] };
+    }
+    return { id: m.id || m.name, caps: Array.isArray(m.caps) ? m.caps : ['stt', 'summarizer'] };
+  });
+}
+
+export function resolveSttModel(cfg, provider = cfg?.sttProvider, db = null) {
   if (provider === 'sidecar' || !provider) return cfg?.whisperModel || WHISPER_MODELS[0];
-  return cfg?.sttModel || 'whisper-1';
+  if (cfg?.sttModel) return cfg.sttModel;
+  if (db && typeof db.getProvider === 'function') {
+    const row = db.getProvider(provider);
+    if (row?.models) {
+      const parsed = parseProviderModels(row.models);
+      const sttModel = parsed.find((m) => m.caps.includes('stt') || m.caps.includes('llm_stt'));
+      if (sttModel) return sttModel.id;
+    }
+  }
+  return 'whisper-1';
 }
 
 // Build the transcribe function for a guild config. Supports both:
@@ -46,6 +78,18 @@ export function getSTT(cfg = {}, dbOrEnv = null, envOrDeps = envConfig, deps = {
   }
   const row = db.getProvider(provider);
   if (!row) throw new Error(`Unknown STT provider: ${provider}`);
+
+  // Check if the target model is configured for LLM STT (/chat/completions with input_audio)
+  const targetModel = cfg.sttModel || resolveSttModel(cfg, provider, db);
+  const parsedModels = parseProviderModels(row.models);
+  const modelMeta = parsedModels.find((m) => m.id === targetModel);
+  const isLlmStt = modelMeta
+    ? (modelMeta.caps.includes('llm_stt') && !modelMeta.caps.includes('stt'))
+    : (row.caps === 'llm_stt');
+
+  if (isLlmStt) {
+    return createLlmSTT({ baseUrl: row.base_url, apiKey: row.api_key, label: row.name || provider }, effectiveDeps);
+  }
   return createOpenAICompatibleSTT({ baseUrl: row.base_url, apiKey: row.api_key, label: row.name || provider }, effectiveDeps);
 }
 
@@ -71,7 +115,7 @@ export function sttProviderReady(provider, dbOrEnv = null, env = envConfig) {
 }
 
 // List available STT providers: always includes the built-in sidecar, plus any
-// DB providers whose caps include 'stt' or 'both' (and openai by default).
+// DB providers whose caps include 'stt', 'llm_stt' or 'both' (and openai by default).
 export function availableSttProviders(dbOrEnv = null, env = envConfig) {
   const isDb = dbOrEnv && typeof dbOrEnv.listProviders === 'function';
   const out = [
@@ -84,19 +128,24 @@ export function availableSttProviders(dbOrEnv = null, env = envConfig) {
   ];
   if (isDb) {
     for (const row of dbOrEnv.listProviders()) {
-      if (row.caps !== 'stt' && row.caps !== 'both') continue;
-      let provModels = [];
-      if (row.models) {
-        try {
-          provModels = Array.isArray(row.models) ? row.models : JSON.parse(row.models);
-        } catch {
-          provModels = String(row.models).split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
-        }
+      const parsedModels = parseProviderModels(row.models);
+      const hasSttModels = parsedModels.some((m) => m.caps.includes('stt') || m.caps.includes('llm_stt'));
+      const providerSupportsStt = row.caps === 'stt' || row.caps === 'both' || row.caps === 'llm_stt' || hasSttModels;
+      if (!providerSupportsStt) continue;
+
+      let sttModelIds = [];
+      if (parsedModels.length > 0) {
+        sttModelIds = parsedModels
+          .filter((m) => m.caps.includes('stt') || m.caps.includes('llm_stt'))
+          .map((m) => m.id);
+        if (sttModelIds.length === 0) sttModelIds = parsedModels.map((m) => m.id);
       }
+
       out.push({
         provider: row.id,
         label: row.name || row.id,
-        models: provModels,
+        models: sttModelIds,
+        modelDetails: parsedModels,
         ...sttProviderReady(row.id, dbOrEnv, env),
       });
     }

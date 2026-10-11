@@ -1,6 +1,9 @@
 // test/api.test.js
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import express from 'express';
 import { ChannelType } from 'discord.js';
 import { openDb } from '../src/store/db.js';
@@ -358,6 +361,9 @@ test('D3: non-admin user gets 403 on admin-gated routes', async () => {
     const del = await fetch(`${base}/api/meetings/${id}`, { method: 'DELETE' });
     assert.equal(del.status, 403);
 
+    const delAudio = await fetch(`${base}/api/meetings/${id}/audio`, { method: 'DELETE' });
+    assert.equal(delAudio.status, 403);
+
     const merge = await fetch(`${base}/api/meetings/${id}/merge`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sourceIds: [999] }),
     });
@@ -536,4 +542,39 @@ test('GET /api/meetings/:id/export 404s for a missing meeting', async () => {
   try {
     assert.equal((await fetch(`${base}/api/meetings/9999/export`)).status, 404);
   } finally { close(); }
+});
+
+test('DELETE /api/meetings/:id/audio removes the audio directory and updates hasAudio', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'parley-api-audio-test-'));
+  const db = openDb(':memory:');
+  const id = db.createMeeting({ guildId: 'g1', channelId: 'c', channelName: 'gen', startedAt: 'now' });
+  const audioDir = join(dir, 'audio', String(id));
+  mkdirSync(audioDir, { recursive: true });
+  writeFileSync(join(audioDir, 'u1_0.pcm'), 'fake');
+
+  const app = express();
+  app.use(express.json());
+  app.use('/api', apiRouter({ db, client: null, env: { dataDir: dir } }));
+  const { base, close } = await listen(app);
+  try {
+    const pre = await (await fetch(`${base}/api/meetings/${id}`)).json();
+    assert.equal(pre.hasAudio, true);
+    assert.equal(pre.pcmCount, 1);
+
+    const del = await fetch(`${base}/api/meetings/${id}/audio`, { method: 'DELETE' });
+    assert.equal(del.status, 200);
+    const body = await del.json();
+    assert.equal(body.ok, true);
+    assert.equal(existsSync(audioDir), false);
+
+    const post = await (await fetch(`${base}/api/meetings/${id}`)).json();
+    assert.equal(post.hasAudio, false);
+    assert.equal(post.pcmCount, 0);
+
+    const notFound = await fetch(`${base}/api/meetings/9999/audio`, { method: 'DELETE' });
+    assert.equal(notFound.status, 404);
+  } finally {
+    close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

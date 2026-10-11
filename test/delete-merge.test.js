@@ -69,3 +69,17 @@ test('clearSummary drops summary + auto-seeded todos for re-summarize', () => {
   assert.equal(db.getSummary(m1), null);
   assert.equal(db.listTodos('g1').filter((t) => t.meeting_id === m1).length, 0);
 });
+
+test('clearMeetingGeneratedData clears utterances, summary and todos while keeping meeting & attendees', () => {
+  const { db, m1 } = seed();
+  db.clearMeetingGeneratedData(m1);
+  const m = db.getMeeting(m1);
+  assert.ok(m);
+  assert.equal(m.status, 'recorded');
+  assert.equal(m.transcription_complete, null);
+  assert.equal(db.listUtterances(m1).length, 0);
+  assert.equal(db.getSummary(m1), null);
+  assert.equal(db.listTodos('g1').filter((t) => t.meeting_id === m1).length, 0);
+  assert.equal(db.listAttendees(m1).length, 1);
+});
+

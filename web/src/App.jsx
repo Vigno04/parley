@@ -16,6 +16,7 @@ import Analytics from './pages/Analytics.jsx';
 import Search from './pages/Search.jsx';
 import Commands from './pages/Commands.jsx';
 import ServerSettings from './pages/ServerSettings.jsx';
+import Testing from './pages/Testing.jsx';
 import Setup from './pages/Setup.jsx';
 import Account from './pages/Account.jsx';
 import NotFound from './pages/NotFound.jsx';
@@ -50,6 +51,7 @@ function Shell() {
               <Route path="/analytics" element={<Analytics />} />
               <Route path="/search" element={<Search />} />
               <Route path="/commands" element={<Commands />} />
+              <Route path="/testing" element={<Testing />} />
               <Route path="/server-settings" element={<ServerSettings />} />
               <Route path="/setup" element={<Setup />} />
               <Route path="/account" element={<Account />} />

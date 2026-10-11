@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { ChannelType } from 'discord.js';
-import { readdirSync } from 'node:fs';
+import { readdirSync, createReadStream, statSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getGuildConfig, setGuildConfig } from '../store/config.js';
@@ -16,11 +16,10 @@ import { listModels, clearModelCache, DEFAULT_MODELS } from '../adapters/summari
 import { connectionStatus, setConnection } from '../store/secrets.js';import { COMMAND_CATALOG } from '../commands/definitions.js';
 import { retryMeeting, retranscribeMeeting, retryPlan, RETRYABLE_STATUSES } from '../pipeline/retry.js';
 import { availableSttProviders } from '../adapters/stt/index.js';
+import { transcribeTracks } from '../pipeline/transcribe.js';
+import { parsePcmName, wavHeader, pcmDurationMs } from '../voice/audio.js';
 import { requireAdmin } from './auth.js';
-
-function audioDir(id) {
-  return join(env.dataDir, 'audio', String(id));
-}
+import { setMeetingProgress, getMeetingProgress, clearMeetingProgress } from '../pipeline/progress.js';
 
 function guildName(client, id, dbNames = {}) {
   return client?.guilds?.cache?.get(id)?.name || dbNames[id] || id;
@@ -36,9 +35,11 @@ function anyGuildUsesSidecar(db) {
   } catch { return true; }
 }
 
-export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
+export function apiRouter({ db, bot = null, client = null, sidecar = null, env: envOverride = null }) {
   const r = Router();
+  const effectiveEnv = envOverride || env;
   const liveClient = () => bot?.client || client;
+  const audioDir = (id) => join(effectiveEnv.dataDir, 'audio', String(id));
 
   function liveMeetings(guildId) {
     const sessions = (bot && typeof bot.liveMeetings === 'function' ? bot.liveMeetings() : [])
@@ -105,6 +106,7 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     try {
       pcmCount = readdirSync(audioDir(id)).filter((f) => f.endsWith('.pcm')).length;
     } catch {}
+    const cfg = getGuildConfig(db, meeting.guild_id);
     res.json({
       meeting,
       summary: db.getSummary(id),
@@ -112,9 +114,17 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
       utterances: db.listUtterances(id),
       hasAudio: pcmCount > 0,
       pcmCount,
+      sttPrompt: cfg.sttPrompt || '',
       sttProviders: availableSttProviders(db, env),
       retry: { eligible: RETRYABLE_STATUSES.has(meeting.status) && plan.ok, action: plan.action, reason: plan.reason || null },
+      progress: getMeetingProgress(id),
     });
+  });
+
+  r.get('/meetings/:id/progress', (req, res) => {
+    const id = Number(req.params.id);
+    const progress = getMeetingProgress(id);
+    res.json({ ok: true, active: !!progress, progress });
   });
 
   r.get('/meetings/:id/export', async (req, res) => {
@@ -212,6 +222,388 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
+  });
+
+  // Track active and recent comparison benchmark jobs per meeting
+  const compareJobs = new Map();
+
+  r.get('/meetings/:id/compare-status', (req, res) => {
+    const id = Number(req.params.id);
+    const job = compareJobs.get(id);
+    const progress = getMeetingProgress(id);
+    res.json({
+      ok: true,
+      active: !!(job?.active),
+      progress: progress || null,
+      runs: job?.runs || null,
+      error: job?.error || null,
+    });
+  });
+
+  r.post('/meetings/:id/compare-cancel', (req, res) => {
+    const id = Number(req.params.id);
+    const job = compareJobs.get(id);
+    if (job?.active) {
+      job.active = false;
+      job.abortCtrl?.abort();
+      clearMeetingProgress(id);
+      console.log(`[compare] Meeting ${id}: Benchmark cancelled explicitly by user.`);
+    }
+    res.json({ ok: true });
+  });
+
+  r.post('/meetings/:id/compare-transcribe', async (req, res) => {
+    const id = Number(req.params.id);
+    const meeting = db.getMeeting(id);
+    if (!meeting) return res.status(404).json({ error: 'meeting not found' });
+
+    // If a benchmark is already actively running for this meeting, attach to it!
+    const existingJob = compareJobs.get(id);
+    if (existingJob?.active && existingJob.promise) {
+      console.log(`[compare] Meeting ${id}: Client attached to ongoing benchmark.`);
+      try {
+        const resultRuns = await existingJob.promise;
+        return res.json({ ok: true, runs: resultRuns });
+      } catch (err) {
+        return res.status(500).json({ error: err.message || 'Comparison failed' });
+      }
+    }
+
+    const dir = audioDir(id);
+    let files = [];
+    try {
+      files = readdirSync(dir).filter((f) => f.endsWith('.pcm'));
+    } catch {}
+    if (files.length === 0) {
+      return res.status(400).json({ error: 'No audio recordings remain on disk for this meeting.' });
+    }
+
+    const requestedModels = Array.isArray(req.body?.models) ? req.body.models : [];
+    if (requestedModels.length === 0) {
+      return res.status(400).json({ error: 'Please select at least 2 models to compare.' });
+    }
+
+    const cfg = getGuildConfig(db, meeting.guild_id);
+    const attendees = db.listAttendees(id);
+    const nameMap = new Map(attendees.map((a) => [a.user_id, a.display_name]));
+
+    let tracks = files.map((f) => {
+      const { userId, startMs } = parsePcmName(f);
+      return {
+        userId,
+        displayName: nameMap.get(userId) || userId,
+        startMs,
+        pcmPath: join(dir, f),
+      };
+    });
+
+    // Order by recording timeline
+    tracks.sort((a, b) => a.startMs - b.startMs);
+
+    // Limit time window from start of recording if requested
+    const durationLimitSec = Number(req.body?.durationLimit || 0);
+    if (durationLimitSec > 0 && tracks.length > 0) {
+      const originMs = tracks[0].startMs;
+      const cutoffMs = originMs + (durationLimitSec * 1000);
+      const filtered = tracks.filter((t) => t.startMs <= cutoffMs);
+      tracks = filtered.length > 0 ? filtered : tracks.slice(0, 10);
+    }
+
+    const isParallel = req.body?.executionMode === 'parallel';
+    const chunkConcurrency = isParallel ? 2 : 1;
+
+    const abortCtrl = new AbortController();
+    const job = {
+      active: true,
+      abortCtrl,
+      runs: null,
+      error: null,
+      startedAt: Date.now(),
+      promise: null,
+    };
+    compareJobs.set(id, job);
+
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        console.log(`[compare] Meeting ${id}: Client socket disconnected; benchmark continuing in background.`);
+      }
+    });
+
+    async function executeBenchmark() {
+      console.log(`[compare] Meeting ${id}: benchmarking ${requestedModels.length} models across ${tracks.length} tracks (mode: ${isParallel ? 'PARALLEL' : 'SEQUENTIAL'}, chunkConcurrency: ${chunkConcurrency})...`);
+
+      const totalSteps = requestedModels.length * tracks.length;
+      let completedSteps = 0;
+      const compareStartTime = Date.now();
+
+      setMeetingProgress(id, {
+        phase: 'comparing',
+        currentModel: requestedModels[0]?.label || requestedModels[0]?.model || 'Model 1',
+        modelIndex: 1,
+        totalModels: requestedModels.length,
+        completed: 0,
+        total: totalSteps,
+        percent: 0,
+        startedAt: compareStartTime,
+      });
+
+      async function runModel(m, modelIndex = 0) {
+        if (abortCtrl.signal.aborted) return null;
+        const runCfg = {
+          ...cfg,
+          sttProvider: m.sttProvider || cfg.sttProvider,
+          sttModel: m.model || null,
+          whisperModel: m.model || 'small',
+          sttPrompt: req.body?.sttPrompt ?? cfg.sttPrompt,
+        };
+        const modelLabel = m.label || `${runCfg.sttProvider}:${runCfg.sttModel || runCfg.whisperModel}`;
+        console.log(`[compare] Starting model: ${modelLabel}...`);
+
+        setMeetingProgress(id, {
+          phase: 'comparing',
+          currentModel: modelLabel,
+          modelIndex: modelIndex + 1,
+          totalModels: requestedModels.length,
+          completed: completedSteps,
+          total: totalSteps,
+          percent: totalSteps > 0 ? Math.min(99, Math.round((completedSteps / totalSteps) * 100)) : 0,
+          startedAt: compareStartTime,
+        });
+
+        try {
+          const { utterances, failures } = await transcribeTracks(tracks, runCfg, {
+            db,
+            env,
+            signal: abortCtrl.signal,
+            concurrency: chunkConcurrency,
+            mergeTracks: async (tr) => tr, // Non-destructive: compare without modifying raw disk audio
+            onProgress: ({ completed: modelTrackDone }) => {
+              const currentDone = isParallel
+                ? completedSteps + 1
+                : (modelIndex * tracks.length) + modelTrackDone;
+              const pct = totalSteps > 0
+                ? Math.min(99, Math.round((currentDone / totalSteps) * 100))
+                : 0;
+              const elapsed = Math.max(0, Math.round((Date.now() - compareStartTime) / 1000));
+              let eta = null;
+              if (currentDone > 0 && totalSteps > currentDone) {
+                const rate = elapsed / currentDone;
+                eta = Math.max(0, Math.round((totalSteps - currentDone) * rate));
+              }
+              setMeetingProgress(id, {
+                phase: 'comparing',
+                currentModel: modelLabel,
+                modelIndex: modelIndex + 1,
+                totalModels: requestedModels.length,
+                completed: currentDone,
+                total: totalSteps,
+                percent: pct,
+                elapsedSeconds: elapsed,
+                etaSeconds: eta,
+                startedAt: compareStartTime,
+              });
+            },
+          });
+          completedSteps = isParallel ? completedSteps + tracks.length : (modelIndex + 1) * tracks.length;
+          console.log(`[compare] Finished model: ${modelLabel} (${utterances.length} utterances, ${failures.length} errors)`);
+          const enrichedUtterances = utterances.map((u) => ({
+            ...u,
+            audioUrl: `/api/meetings/${id}/audio-clip?userId=${encodeURIComponent(u.userId)}&startMs=${u.startMs}`,
+          }));
+          return {
+            provider: runCfg.sttProvider,
+            model: runCfg.sttModel || runCfg.whisperModel,
+            label: modelLabel,
+            utterances: enrichedUtterances,
+            failures,
+          };
+        } catch (err) {
+          if (abortCtrl.signal.aborted) {
+            console.log(`[compare] Model ${modelLabel} aborted.`);
+            return null;
+          }
+          console.error(`[compare] Model error for ${modelLabel}:`, err);
+          return {
+            provider: runCfg.sttProvider,
+            model: runCfg.sttModel || runCfg.whisperModel,
+            label: modelLabel,
+            utterances: [],
+            failures: [{ error: err.message || String(err) }],
+          };
+        }
+      }
+
+      let runs = [];
+      try {
+        if (isParallel) {
+          const results = await Promise.all(requestedModels.map((m, idx) => runModel(m, idx)));
+          runs = results.filter(Boolean);
+        } else {
+          for (let i = 0; i < requestedModels.length; i++) {
+            if (abortCtrl.signal.aborted) break;
+            const result = await runModel(requestedModels[i], i);
+            if (result) runs.push(result);
+          }
+        }
+      } finally {
+        clearMeetingProgress(id);
+      }
+      return runs;
+    }
+
+    job.promise = executeBenchmark();
+
+    try {
+      const runs = await job.promise;
+      job.runs = runs;
+      job.active = false;
+      if (!res.writableEnded) {
+        res.json({ ok: true, runs });
+      }
+    } catch (err) {
+      job.error = err.message || String(err);
+      job.active = false;
+      if (!res.writableEnded) {
+        res.status(500).json({ error: job.error });
+      }
+    }
+  });
+
+  // Stream a specific audio track as a standard playable WAV file on the fly
+  r.get(['/meetings/:id/audio-clip', '/meetings/:id/audio/:userId/:startMs'], async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'invalid meeting id' });
+    const meeting = db.getMeeting(id);
+    if (!meeting) return res.status(404).json({ error: 'meeting not found' });
+
+    const userId = String(req.params.userId || req.query.userId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    const startMs = Number(req.params.startMs ?? req.query.startMs);
+    if (!userId || !Number.isFinite(startMs) || startMs < 0) {
+      return res.status(400).json({ error: 'valid userId and startMs are required' });
+    }
+
+    const dir = audioDir(id);
+    const pcmPath = join(dir, `${userId}_${startMs}.pcm`);
+
+    let fileStat;
+    try {
+      fileStat = statSync(pcmPath);
+    } catch {
+      return res.status(404).json({ error: 'Audio recording file not found' });
+    }
+
+    const header = wavHeader(fileStat.size);
+    res.writeHead(200, {
+      'Content-Type': 'audio/wav',
+      'Content-Length': fileStat.size + header.length,
+      'Accept-Ranges': 'none',
+      'Cache-Control': 'private, max-age=86400',
+    });
+    res.write(header);
+    const stream = createReadStream(pcmPath);
+    stream.on('error', (err) => {
+      console.error('[audio] Stream error:', err);
+      if (!res.headersSent) res.status(500).end();
+      else res.end();
+    });
+    stream.pipe(res);
+  });
+
+  // List all available audio tracks for a meeting
+  r.get('/meetings/:id/audio-tracks', (req, res) => {
+    const id = Number(req.params.id);
+    const meeting = db.getMeeting(id);
+    if (!meeting) return res.status(404).json({ error: 'meeting not found' });
+
+    const dir = audioDir(id);
+    let files = [];
+    try {
+      files = readdirSync(dir).filter((f) => f.endsWith('.pcm'));
+    } catch {}
+
+    const attendees = db.listAttendees(id);
+    const nameMap = new Map(attendees.map((a) => [a.user_id, a.display_name]));
+
+    const tracks = files.map((f) => {
+      const { userId, startMs } = parsePcmName(f);
+      let size = 0;
+      try { size = statSync(join(dir, f)).size; } catch {}
+      return {
+        userId,
+        displayName: nameMap.get(userId) || userId,
+        startMs,
+        durationMs: pcmDurationMs(size),
+        sizeBytes: size,
+        audioUrl: `/api/meetings/${id}/audio-clip?userId=${encodeURIComponent(userId)}&startMs=${startMs}`,
+      };
+    }).sort((a, b) => a.startMs - b.startMs);
+
+    res.json({ ok: true, tracks, count: tracks.length });
+  });
+
+  // List all available STT providers with models parsed and capability-filtered
+  r.get('/stt-providers', (_req, res) => {
+    res.json({ ok: true, providers: availableSttProviders(db, effectiveEnv) });
+  });
+
+  r.post('/meetings/:id/apply-transcription', requireAdmin, async (req, res) => {
+    const id = Number(req.params.id);
+    const meeting = db.getMeeting(id);
+    if (!meeting) return res.status(404).json({ error: 'meeting not found' });
+    const utterances = req.body?.utterances;
+    if (!Array.isArray(utterances)) return res.status(400).json({ error: 'utterances array required' });
+
+    db.sql.exec('BEGIN');
+    try {
+      db.sql.prepare(`DELETE FROM utterances WHERE meeting_id = ?`).run(id);
+      const insert = db.sql.prepare(
+        `INSERT INTO utterances (meeting_id, user_id, display_name, start_ms, end_ms, text)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      );
+      for (const u of utterances) {
+        insert.run(id, u.userId, u.displayName, u.startMs, u.endMs, u.text);
+      }
+      db.sql.exec('COMMIT');
+    } catch (e) {
+      db.sql.exec('ROLLBACK');
+      return res.status(500).json({ error: e.message });
+    }
+    res.json({ ok: true, utterances: db.listUtterances(id) });
+  });
+
+  r.post('/meetings/:id/clear-generated', requireAdmin, async (req, res) => {
+    const id = Number(req.params.id);
+    const meeting = db.getMeeting(id);
+    if (!meeting) return res.status(404).json({ error: 'meeting not found' });
+
+    let pcmCount = 0;
+    try {
+      pcmCount = readdirSync(audioDir(id)).filter((f) => f.endsWith('.pcm')).length;
+    } catch {}
+    if (pcmCount === 0) {
+      return res.status(400).json({ error: 'Cannot clear generated data because no audio recordings exist for this meeting.' });
+    }
+
+    db.clearMeetingGeneratedData(id);
+    res.json({
+      ok: true,
+      meeting: db.getMeeting(id),
+      summary: db.getSummary(id),
+      utterances: db.listUtterances(id),
+    });
+  });
+
+  r.delete('/meetings/:id/audio', requireAdmin, async (req, res) => {
+    const id = Number(req.params.id);
+    const meeting = db.getMeeting(id);
+    if (!meeting) return res.status(404).json({ error: 'meeting not found' });
+    const job = comparisonJobs.get(id);
+    if (job?.active && job.abortController) {
+      job.abortController.abort();
+      job.active = false;
+    }
+    await rm(audioDir(id), { recursive: true, force: true }).catch(() => {});
+    res.json({ ok: true });
   });
 
   r.delete('/meetings/:id', requireAdmin, async (req, res) => {

@@ -163,3 +163,44 @@ test('transcribeTracks returns all failures (and no utterances) when every track
   assert.equal(utterances.length, 0);
   assert.equal(failures.length, 2);
 });
+
+test('transcribeTracks discards unvoiced tracks before STT', async () => {
+  const tracks = [
+    { userId: 'u1', displayName: 'Alice', startMs: 0, pcmPath: '/voiced.pcm' },
+    { userId: 'u2', displayName: 'Bob', startMs: 1000, pcmPath: '/silence.pcm' },
+  ];
+  const sttCalls = [];
+  const deps = {
+    convert: async (p, w) => w,
+    isVoiced: async (p) => p.includes('voiced'),
+    stt: async (wav) => {
+      sttCalls.push(wav);
+      return { text: 'voiced text', words: [{ start: 0, end: 1 }] };
+    },
+    cleanup: () => {},
+  };
+  const { utterances, failures } = await transcribeTracks(tracks, {}, deps);
+  assert.equal(utterances.length, 1);
+  assert.equal(utterances[0].userId, 'u1');
+  assert.equal(failures.length, 0);
+  assert.equal(sttCalls.length, 1);
+  assert.ok(sttCalls[0].includes('voiced'));
+});
+
+test('transcribeTracks applies speaker merging when mergeTracks is supplied', async () => {
+  const tracks = [
+    { userId: 'u1', displayName: 'Alice', startMs: 0, pcmPath: '/a1.pcm' },
+    { userId: 'u1', displayName: 'Alice', startMs: 1500, pcmPath: '/a2.pcm' },
+  ];
+  const deps = {
+    convert: async (p, w) => w,
+    mergeTracks: async (tr) => [{ userId: 'u1', displayName: 'Alice', startMs: 0, pcmPath: '/a1.pcm' }],
+    stt: async () => ({ text: 'merged sentence', words: [{ start: 0, end: 3 }] }),
+    cleanup: () => {},
+  };
+  const { utterances } = await transcribeTracks(tracks, {}, deps);
+  assert.equal(utterances.length, 1);
+  assert.equal(utterances[0].text, 'merged sentence');
+  assert.equal(utterances[0].endMs, 3000);
+});
+

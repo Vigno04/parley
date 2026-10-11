@@ -371,6 +371,18 @@ export default function ServerSettings() {
             </div>
           </Field>
 
+          <Field
+            label="Transcription vocabulary / glossary (D&D diary)"
+            hint="Proper nouns, fantasy character names, locations, and specialized jargon to guide speech-to-text models (Whisper, Voxtral, Gemma)."
+          >
+            <textarea
+              className="input min-h-20 font-mono text-xs resize-y"
+              value={c?.sttPrompt || ''}
+              onChange={(e) => save({ sttPrompt: e.target.value || null })}
+              placeholder="e.g. Neverwinter, Faerun, Tiamat, Waterdeep, Strahd, Baldur's Gate..."
+            />
+          </Field>
+
           <div className="pt-3 border-t border-border">
             <Switch
               checked={c?.autoTranscribe !== false}

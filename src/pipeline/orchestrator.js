@@ -3,10 +3,32 @@ import { buildTranscript, computeTalkTime } from './summarize.js';
 import { getSummarizer } from '../adapters/summarizer/index.js';
 import { describeSummarizerError } from '../adapters/summarizer/errors.js';
 import { resolveSummaryLanguage } from '../adapters/summarizer/languages.js';
+import { setMeetingProgress, clearMeetingProgress } from './progress.js';
 
 export async function processMeeting(db, meetingId, opts) {
   const meeting = db.getMeeting(meetingId);
-  const transcribe = opts.transcribe || ((tracks, cfg) => transcribeTracks(tracks, cfg, { db, ...(opts.transcribeDeps || {}) }));
+  const totalTracks = Array.isArray(opts.tracks) ? opts.tracks.length : 1;
+
+  setMeetingProgress(meetingId, {
+    phase: 'transcribing',
+    completed: 0,
+    total: totalTracks,
+    percent: 0,
+    startedAt: Date.now(),
+  });
+
+  const onProgress = (p) => {
+    setMeetingProgress(meetingId, {
+      phase: 'transcribing',
+      ...p,
+    });
+  };
+
+  const transcribe = opts.transcribe || ((tracks, cfg) => transcribeTracks(tracks, cfg, {
+    db,
+    onProgress,
+    ...(opts.transcribeDeps || {}),
+  }));
   const isSummarizerEnabled = opts.cfg?.summarizerEnabled !== false;
   const summarizer = isSummarizerEnabled ? (opts.summarizer || getSummarizer(opts.cfg, db)) : null;
 
@@ -27,6 +49,7 @@ export async function processMeeting(db, meetingId, opts) {
       failures = result.failures || [];
     }
   } catch (err) {
+    clearMeetingProgress(meetingId);
     db.setTranscriptionComplete(meetingId, false);
     db.setMeetingStatus(meetingId, 'transcription_failed');
     err.userMessage = `Transcription failed — the STT sidecar may be down or unreachable. (${err.message})`;
@@ -79,10 +102,18 @@ export async function processMeeting(db, meetingId, opts) {
   let modelUsed = 'disabled';
 
   if (isSummarizerEnabled && summarizer) {
+    setMeetingProgress(meetingId, {
+      phase: 'summarizing',
+      completed: totalTracks,
+      total: totalTracks,
+      percent: 92,
+      etaSeconds: 15,
+    });
     const summarizeStart = Date.now();
     try {
       notes = await summarizer.summarize(transcript, meta);
     } catch (err) {
+      clearMeetingProgress(meetingId);
       db.setMeetingStatus(meetingId, 'summary_failed');
       // FallbackSummarizer already composed a message naming both attempts; don't
       // overwrite it with one that only mentions the primary provider.
@@ -108,6 +139,7 @@ export async function processMeeting(db, meetingId, opts) {
     db.seedTodos(meetingId, meeting.guild_id, notes.actionItems || [], meeting.started_at);
   }
   db.setMeetingStatus(meetingId, 'done', new Date().toISOString());
+  clearMeetingProgress(meetingId);
 
   // Delivery is the last step and runs AFTER the summary is safely persisted, so
   // a posting failure (missing perms, deleted channel) must not throw away a

@@ -19,6 +19,7 @@ export const Icon = {
   Users: (p) => <I {...p}><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0" /><path d="M16 5.2a3.5 3.5 0 0 1 0 6.6M21.5 20a6.5 6.5 0 0 0-5-6.3" /></I>,
   Mic: (p) => <I {...p}><rect x="9" y="2.5" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3.5" /></I>,
   Sparkle: (p) => <I {...p}><path d="M12 3l1.8 4.9L18.7 9l-4.9 1.8L12 15.7 10.2 10.8 5.3 9l4.9-1.6L12 3Z" /></I>,
+  Play: (p) => <I {...p}><polygon points="6 3 20 12 6 21 6 3" fill="currentColor" stroke="none" /></I>,
   Arrow: (p) => <I {...p}><path d="M5 12h14M13 6l6 6-6 6" /></I>,
   ArrowUpRight: (p) => <I {...p}><path d="M7 17 17 7M8 7h9v9" /></I>,
   Chevron: (p) => <I {...p}><path d="m9 6 6 6-6 6" /></I>,
@@ -42,6 +43,9 @@ export const Icon = {
   Plus: (p) => <I {...p}><path d="M12 5v14M5 12h14" /></I>,
   Sliders: (p) => <I {...p}><line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" /><line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" /><line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" /><line x1="1" y1="14" x2="7" y2="14" /><line x1="9" y1="8" x2="15" y2="8" /><line x1="17" y1="16" x2="23" y2="16" /></I>,
   Server: (p) => <I {...p}><rect width="20" height="8" x="2" y="2" rx="2" /><rect width="20" height="8" x="2" y="14" rx="2" /><line x1="6" x2="6.01" y1="6" y2="6" /><line x1="6" x2="6.01" y1="18" y2="18" /></I>,
+  Flask: (p) => <I {...p}><path d="M10 2v7.31L4.15 19.34A2 2 0 0 0 5.86 22h12.28a2 2 0 0 0 1.71-2.66L14 9.31V2" /><path d="M8.5 2h7M7 16h10" /></I>,
+  Pause: (p) => <I {...p}><rect x="6" y="4" width="4" height="16" rx="1" fill="currentColor" stroke="none" /><rect x="14" y="4" width="4" height="16" rx="1" fill="currentColor" stroke="none" /></I>,
+  Volume: (p) => <I {...p}><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="none" /><path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14" /></I>,
 };
 
 /* ── Brand mark (the real Parley waveform → note logo) ──────────────────── */

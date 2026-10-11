@@ -185,3 +185,114 @@ test('availableSttProviders lists every provider with models + readiness', () =>
   assert.deepEqual(openai.models, STT_MODELS.openai);
   assert.equal(list.find((p) => p.provider === 'sidecar').ok, true);
 });
+
+test('createLlmSTT posts audio base64 to /chat/completions with prompt glossary', async () => {
+  const { createLlmSTT } = await import('../src/adapters/stt/llm.js');
+  let capturedUrl;
+  let capturedBody;
+  const fetchImpl = async (url, init) => {
+    capturedUrl = url;
+    capturedBody = JSON.parse(init.body);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: 'Tiamat and Neverwinter' } }],
+      }),
+    };
+  };
+  const readFile = async () => Buffer.from('RIFFtestwavbytes');
+  const transcribe = createLlmSTT({ baseUrl: 'https://pc.vigno.eu/v1', apiKey: 'test-key' }, { fetchImpl, readFile });
+  const res = await transcribe('/tmp/sample.wav', { model: 'gemma-4-e4b-it-qat', prompt: 'Tiamat, Neverwinter' });
+
+  assert.equal(capturedUrl, 'https://pc.vigno.eu/v1/chat/completions');
+  assert.equal(capturedBody.model, 'gemma-4-e4b-it-qat');
+  assert.equal(capturedBody.messages[0].content[1].type, 'input_audio');
+  assert.equal(capturedBody.messages[0].content[1].input_audio.format, 'wav');
+  assert.ok(capturedBody.messages[0].content[0].text.includes('Tiamat, Neverwinter'));
+  assert.equal(res.text, 'Tiamat and Neverwinter');
+});
+
+test('createLlmSTT discards thinking tokens from reasoning models', async () => {
+  const { createLlmSTT, sanitizeLlmTranscript } = await import('../src/adapters/stt/llm.js');
+  let capturedBody;
+  const fetchImpl = async (url, init) => {
+    capturedBody = JSON.parse(init.body);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: '<think>Let me listen to the audio carefully. The speaker says: Hello adventurers.</think> Hello adventurers.',
+            },
+          },
+        ],
+      }),
+    };
+  };
+  const readFile = async () => Buffer.from('RIFFtestwavbytes');
+  const transcribe = createLlmSTT({ baseUrl: 'https://pc.vigno.eu/v1', apiKey: 'test-key' }, { fetchImpl, readFile });
+  const res = await transcribe('/tmp/sample.wav', { model: 'gemma-4-e4b-it-qat' });
+
+  assert.equal(res.text, 'Hello adventurers.');
+  assert.equal(capturedBody.max_tokens, undefined);
+
+  // Additional sanitizer tests
+  assert.equal(sanitizeLlmTranscript('Thinking Process:\n1. Analyze request...\n\nTranscription:\nEcco la frase'), 'Ecco la frase');
+  assert.equal(sanitizeLlmTranscript('Thinking Process:\n1. Analyze request...\n5. Output: Empty string'), '');
+  assert.equal(sanitizeLlmTranscript('The user wants me to act as an expert verbatim transcriber.\nI will now transcribe.\nI will output nothing.'), '');
+});
+
+test('hallucination suppression drops media artifacts, YouTube credits, and repetition loops', async () => {
+  const { isHallucination, isRepetitionLoop } = await import('../src/voice/hallucinations.js');
+  const { isLowConfidenceSegment } = await import('../src/adapters/stt/openai-compatible.js');
+
+  // Exact & normalized matches
+  assert.equal(isHallucination('Thanks for watching!'), true);
+  assert.equal(isHallucination('thanks for watching.'), true);
+  assert.equal(isHallucination('Grazie per la visione.'), true);
+  assert.equal(isHallucination('Grazie per l\'attenzione!'), true);
+  assert.equal(isHallucination('Sottotitoli creati dalla comunità Amara.org'), true);
+  assert.equal(isHallucination('Iscriviti al canale'), true);
+  assert.equal(isHallucination('[Music]'), true);
+  assert.equal(isHallucination('(applause)'), true);
+
+  // Repetition loops
+  assert.equal(isRepetitionLoop('Thank you very much. Thank you very much. Thank you very much.'), true);
+  assert.equal(isHallucination('Thank you very much. Thank you very much. Thank you very much. Thank you very much.'), true);
+
+  // Legitimate speech is preserved
+  assert.equal(isHallucination('Hello everyone, welcome to the sprint review.'), false);
+  assert.equal(isHallucination('Sì, sono d\'accordo con la proposta.'), false);
+  assert.equal(isHallucination('Grazie a tutti per essere venuti alla riunione.'), false);
+  assert.equal(isHallucination('Yeah'), false);
+  assert.equal(isHallucination('Okay'), false);
+
+  // Low confidence segment metrics
+  assert.equal(isLowConfidenceSegment({ no_speech_prob: 0.85 }), true);
+  assert.equal(isLowConfidenceSegment({ compression_ratio: 2.6 }), true);
+  assert.equal(isLowConfidenceSegment({ no_speech_prob: 0.7, avg_logprob: -1.2 }), true);
+  assert.equal(isLowConfidenceSegment({ no_speech_prob: 0.1, avg_logprob: -0.3, compression_ratio: 1.2 }), false);
+
+  // normalize() filters hallucinated segments and full hallucinated output
+  const filtered1 = normalize({
+    segments: [
+      { text: 'Grazie per la visione.', no_speech_prob: 0.0, avg_logprob: -0.2 },
+    ],
+  });
+  assert.equal(filtered1.text, '');
+  assert.equal(filtered1.words.length, 0);
+
+  const filtered2 = normalize({
+    segments: [
+      { text: 'Buongiorno a tutti, iniziamo la riunione.', no_speech_prob: 0.05, avg_logprob: -0.2, start: 0, end: 3 },
+      { text: 'Sottotitoli a cura di Amara.org', no_speech_prob: 0.9, avg_logprob: -1.5, start: 3, end: 5 },
+    ],
+  });
+  assert.equal(filtered2.text, 'Buongiorno a tutti, iniziamo la riunione.');
+  assert.equal(filtered2.words.length, 1);
+});
+
+

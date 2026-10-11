@@ -16,6 +16,7 @@ const NAV = [
   { to: '/analytics', label: 'Analytics', icon: Icon.Chart },
   { to: '/search', label: 'Search', icon: Icon.Search },
   { to: '/commands', label: 'Commands', icon: Icon.Terminal },
+  { to: '/testing', label: 'Testing', icon: Icon.Flask },
   { to: '/server-settings', label: 'Server settings', icon: Icon.Sliders },
 ];
 

@@ -6,6 +6,7 @@ import { Avatar, AvatarStack, Icon, Empty, TalkBar } from '../components/ui.jsx'
 import { fmtDateLong, fmtTime, fmtDuration, fmtClock, fmtMs, colorOf } from '../lib/format.js';
 import { useDismissable } from '../hooks/useDismissable.js';
 import Markdown from '../components/Markdown.jsx';
+import { CompareModal } from '../components/CompareModal.jsx';
 
 /* ── retry banner (failed meetings) ─────────────────────────────────── */
 const STATUS_COPY = {
@@ -19,17 +20,103 @@ const STATUS_COPY = {
   },
 };
 
-function ProcessingBanner() {
+function fmtSeconds(sec = 0) {
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function ProcessingBanner({ meeting, pcmCount = 0, initialProgress = null }) {
+  const [progress, setProgress] = useState(initialProgress);
+  const [secondsElapsed, setSecondsElapsed] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setSecondsElapsed((s) => s + 1);
+    }, 1000);
+
+    const poll = setInterval(() => {
+      if (!meeting?.id) return;
+      api.meetingProgress(meeting.id)
+        .then((res) => {
+          if (res?.active && res?.progress) {
+            setProgress(res.progress);
+          }
+        })
+        .catch(() => {});
+    }, 1200);
+
+    return () => {
+      clearInterval(timer);
+      clearInterval(poll);
+    };
+  }, [meeting?.id]);
+
+  const totalChunks = progress?.total || pcmCount || 30;
+  const expectedTotalSec = Math.max(25, Math.round(totalChunks * 1.4));
+
+  let pct = 0;
+  let etaText = 'calculating…';
+  let phaseText = 'Transcribing voice tracks…';
+
+  if (progress && typeof progress.percent === 'number') {
+    pct = Math.min(99, Math.max(0, progress.percent));
+    etaText = progress.etaFormatted || 'calculating…';
+    if (progress.phase === 'summarizing') {
+      phaseText = 'Generating summary and action items…';
+    } else if (progress.completed != null && progress.total != null) {
+      phaseText = `Transcribing audio chunks (${progress.completed} / ${progress.total})`;
+    }
+  } else {
+    const fraction = 1 - Math.exp(-secondsElapsed / Math.max(20, expectedTotalSec * 0.55));
+    pct = Math.min(96, Math.max(4, Math.round(fraction * 100)));
+    if (secondsElapsed > 2 && pct > 0) {
+      const remainingSec = Math.max(5, Math.round(((100 - pct) / pct) * secondsElapsed));
+      if (remainingSec < 60) etaText = `~${remainingSec}s remaining`;
+      else {
+        const m = Math.floor(remainingSec / 60);
+        const s = remainingSec % 60;
+        etaText = s > 0 ? `~${m}m ${s}s remaining` : `~${m}m remaining`;
+      }
+    }
+    if (pct > 88) {
+      phaseText = 'Generating summary and action items…';
+    } else if (pcmCount > 0) {
+      const estChunk = Math.min(pcmCount, Math.max(1, Math.round((pct / 100) * pcmCount)));
+      phaseText = `Transcribing audio chunks (~${estChunk} / ${pcmCount})`;
+    }
+  }
+
   return (
-    <div className="card p-5 mt-8 border-l-2 border-primary bg-surface-2/40">
-      <div className="flex items-start gap-3">
-        <span className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin shrink-0 mt-1" />
-        <div className="min-w-0 flex-1">
-          <p className="text-[15px] font-semibold text-ink">Processing meeting…</p>
-          <p className="text-[13.5px] text-muted leading-relaxed mt-1">
-            Speech-to-text transcription and meeting processing are currently running. This page will update automatically once completed.
-          </p>
+    <div className="card p-5 mt-8 border-l-2 border-primary bg-surface-2/60 shadow-lg space-y-3.5 animate-fade-in">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3 min-w-0">
+          <span className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <p className="text-[15px] font-bold text-ink">Processing meeting…</p>
+            <p className="text-xs text-muted leading-relaxed mt-0.5">{phaseText}</p>
+          </div>
         </div>
+        <div className="text-right shrink-0">
+          <span className="text-base font-extrabold text-primary tabular-nums">{pct}%</span>
+          <p className="text-[11px] text-muted tabular-nums">Elapsed {fmtSeconds(secondsElapsed)}</p>
+        </div>
+      </div>
+
+      {/* Progress Bar */}
+      <div className="relative w-full h-2.5 rounded-full bg-surface-3 overflow-hidden border border-border/40">
+        <div
+          className="absolute top-0 bottom-0 left-0 bg-gradient-to-r from-primary via-primary to-accent transition-all duration-500 ease-out rounded-full shadow-[0_0_12px_rgba(var(--primary-rgb),0.55)]"
+          style={{ width: `${Math.max(4, pct)}%` }}
+        />
+      </div>
+
+      <div className="flex items-center justify-between text-xs text-muted pt-0.5">
+        <span className="inline-flex items-center gap-1.5">
+          <Icon.Clock width={13} height={13} className="text-primary/80" />
+          ETA: <strong className="text-ink font-semibold">{etaText}</strong>
+        </span>
+        <span className="text-[11px]">Updates automatically when complete</span>
       </div>
     </div>
   );
@@ -419,7 +506,7 @@ function RetranscribeModal({ meeting, sttProviders = [], onClose, onDone }) {
 }
 
 /* ── meeting actions (delete / merge / export) ─────────────────────────── */
-function MeetingActions({ meeting, meetings, hasAudio, onOpenRetranscribe }) {
+function MeetingActions({ meeting, meetings, hasAudio, onOpenRetranscribe, onOpenCompare, onReload }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState(false); // false | 'pick' | 'busy'
@@ -434,6 +521,26 @@ function MeetingActions({ meeting, meetings, hasAudio, onOpenRetranscribe }) {
     if (!window.confirm('Delete this meeting, its transcript, summary and action items? This cannot be undone.')) return;
     try { await api.deleteMeeting(meeting.id); navigate('/meetings'); }
     catch (e) { setErr(e?.message || 'Delete failed'); }
+  }
+  async function clearGenerated() {
+    setOpen(false);
+    if (!window.confirm('Delete transcript, summary, and action items? The audio recordings will be kept so you can re-transcribe later.')) return;
+    try {
+      await api.clearGeneratedData(meeting.id);
+      onReload ? onReload() : navigate(0);
+    } catch (e) {
+      setErr(e?.message || 'Clear generated data failed');
+    }
+  }
+  async function deleteAudio() {
+    setOpen(false);
+    if (!window.confirm('Delete audio recordings for this meeting? The transcript and summary will be kept, but re-transcribing will no longer be possible. This cannot be undone.')) return;
+    try {
+      await api.deleteAudio(meeting.id);
+      onReload ? onReload() : navigate(0);
+    } catch (e) {
+      setErr(e?.message || 'Delete audio failed');
+    }
   }
   function toggle(id) { setSources((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
   async function merge() {
@@ -457,10 +564,24 @@ function MeetingActions({ meeting, meetings, hasAudio, onOpenRetranscribe }) {
             <Icon.Download width={15} height={15} /> Export (markdown)
           </a>
           {hasAudio && (
-            <button role="menuitem" onClick={() => { setOpen(false); onOpenRetranscribe?.(); }}
-              className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-sm text-ink hover:bg-surface-2">
-              <Icon.Mic width={15} height={15} /> Redo transcription…
-            </button>
+            <>
+              <button role="menuitem" onClick={() => { setOpen(false); onOpenRetranscribe?.(); }}
+                className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-sm text-ink hover:bg-surface-2">
+                <Icon.Mic width={15} height={15} /> Redo transcription…
+              </button>
+              <button role="menuitem" onClick={() => { setOpen(false); navigate(`/testing?meetingId=${meeting.id}`); }}
+                className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-sm text-ink hover:bg-surface-2">
+                <Icon.Flask width={15} height={15} /> Test & compare models…
+              </button>
+              <button role="menuitem" onClick={clearGenerated}
+                className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-sm text-amber-500 hover:bg-surface-2">
+                <Icon.Trash width={15} height={15} /> Delete generated data
+              </button>
+              <button role="menuitem" onClick={deleteAudio}
+                className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-sm text-amber-500 hover:bg-surface-2">
+                <Icon.Trash width={15} height={15} /> Delete audio
+              </button>
+            </>
           )}
           <button role="menuitem" onClick={() => { setMode('pick'); setOpen(false); }} disabled={others.length === 0}
             className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-sm text-ink hover:bg-surface-2 disabled:opacity-40">
@@ -525,6 +646,7 @@ function MeetingNav({ meetings, id }) {
 function Note({ data, todos, guildId, meetings, refetchTodos, onReload }) {
   const { meeting, summary, attendees, utterances, retry } = data;
   const [retranscribeOpen, setRetranscribeOpen] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
   const [transcribeBusy, setTranscribeBusy] = useState(false);
   const hasAudio = !!data.hasAudio;
   const sttProviders = data.sttProviders || [];
@@ -554,21 +676,13 @@ function Note({ data, todos, guildId, meetings, refetchTodos, onReload }) {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {hasAudio && (
-              <button
-                onClick={() => setRetranscribeOpen(true)}
-                className="btn btn-ghost !py-1.5 text-xs text-muted hover:text-ink hidden sm:inline-flex items-center gap-1.5 border border-border"
-                title="Audio recording is saved on disk. Re-run transcription with another model."
-              >
-                <Icon.Mic width={14} height={14} />
-                <span>Redo transcription</span>
-              </button>
-            )}
             <MeetingActions
               meeting={meeting}
               meetings={meetings}
               hasAudio={hasAudio}
               onOpenRetranscribe={() => setRetranscribeOpen(true)}
+              onOpenCompare={() => setCompareOpen(true)}
+              onReload={onReload}
             />
           </div>
         </div>
@@ -580,7 +694,13 @@ function Note({ data, todos, guildId, meetings, refetchTodos, onReload }) {
         )}
       </header>
 
-      {isProcessing && <ProcessingBanner />}
+      {isProcessing && (
+        <ProcessingBanner
+          meeting={meeting}
+          pcmCount={data?.pcmCount || 0}
+          initialProgress={data?.progress || null}
+        />
+      )}
 
       {isRecorded && (
         <RecordedBanner
@@ -710,6 +830,16 @@ function Note({ data, todos, guildId, meetings, refetchTodos, onReload }) {
           sttProviders={sttProviders}
           onClose={() => setRetranscribeOpen(false)}
           onDone={onReload}
+        />
+      )}
+
+      {compareOpen && (
+        <CompareModal
+          meetingId={meeting.id}
+          sttProviders={sttProviders}
+          initialPrompt={data.sttPrompt || ''}
+          onClose={() => setCompareOpen(false)}
+          onApplied={onReload}
         />
       )}
     </article>

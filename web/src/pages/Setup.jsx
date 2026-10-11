@@ -47,22 +47,39 @@ function Chevron() {
 }
 
 /* ── Provider Form (Create / Edit) ────────────────────────────────────────── */
+function parseInitialModels(raw) {
+  if (!raw) return [];
+  let parsed = raw;
+  if (typeof raw === 'string') {
+    try { parsed = JSON.parse(raw); }
+    catch { parsed = raw.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean); }
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.map((item) => {
+    if (typeof item === 'string') {
+      const idLower = item.toLowerCase();
+      const isWhisper = idLower.includes('whisper') || idLower.includes('voxtral');
+      const isLlm = idLower.includes('gemma') || idLower.includes('gemini') || idLower.includes('llama') || idLower.includes('chat') || idLower.includes('instruct');
+      return {
+        id: item,
+        caps: isWhisper ? ['stt'] : isLlm ? ['llm_stt', 'summarizer'] : ['summarizer', 'stt'],
+      };
+    }
+    return {
+      id: item.id || item.name,
+      caps: Array.isArray(item.caps) ? item.caps : ['stt', 'summarizer'],
+    };
+  });
+}
+
 function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
   const [kind, setKind] = useState(initial?.kind || 'openai-compatible');
-  const [caps, setCaps] = useState(initial?.caps || 'both');
   const [id, setId] = useState(initial?.id || '');
   const [name, setName] = useState(initial?.name || '');
   const [baseUrl, setBaseUrl] = useState(initial?.base_url || initial?.baseUrl || '');
   const [apiKey, setApiKey] = useState('');
-  const [modelsStr, setModelsStr] = useState(() => {
-    if (!initial?.models) return '';
-    if (Array.isArray(initial.models)) return initial.models.join(', ');
-    try {
-      const parsed = JSON.parse(initial.models);
-      if (Array.isArray(parsed)) return parsed.join(', ');
-    } catch { /* use raw */ }
-    return String(initial.models);
-  });
+  const [modelList, setModelList] = useState(() => parseInitialModels(initial?.models));
+  const [newModelName, setNewModelName] = useState('');
   const [detecting, setDetecting] = useState(false);
   const [detectMsg, setDetectMsg] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -78,6 +95,40 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
     }
   }
 
+  function handleAddModel(e) {
+    e?.preventDefault();
+    const trimmed = newModelName.trim();
+    if (!trimmed) return;
+    if (modelList.some((m) => m.id === trimmed)) return;
+    const idLower = trimmed.toLowerCase();
+    const isWhisper = idLower.includes('whisper') || idLower.includes('voxtral');
+    const isLlm = idLower.includes('gemma') || idLower.includes('gemini') || idLower.includes('llama') || idLower.includes('chat');
+    setModelList((prev) => [
+      ...prev,
+      {
+        id: trimmed,
+        caps: isWhisper ? ['stt'] : isLlm ? ['llm_stt', 'summarizer'] : ['summarizer'],
+      },
+    ]);
+    setNewModelName('');
+  }
+
+  function handleRemoveModel(mId) {
+    setModelList((prev) => prev.filter((m) => m.id !== mId));
+  }
+
+  function toggleCap(modelId, cap) {
+    setModelList((prev) =>
+      prev.map((m) => {
+        if (m.id !== modelId) return m;
+        const set = new Set(m.caps);
+        if (set.has(cap)) set.delete(cap);
+        else set.add(cap);
+        return { ...m, caps: Array.from(set) };
+      })
+    );
+  }
+
   async function handleDetect() {
     setDetecting(true);
     setDetectMsg(null);
@@ -89,13 +140,27 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
         apiKey: apiKey.trim() || undefined,
       });
       if (res.ok && res.models?.length) {
-        setModelsStr(res.models.join(', '));
-        setDetectMsg({ ok: true, text: `Found ${res.models.length} models: ${res.models.slice(0, 3).join(', ')}${res.models.length > 3 ? '…' : ''}` });
+        setModelList((prev) => {
+          const map = new Map(prev.map((m) => [m.id, m]));
+          for (const mId of res.models) {
+            if (!map.has(mId)) {
+              const idLower = mId.toLowerCase();
+              const isWhisper = idLower.includes('whisper') || idLower.includes('voxtral');
+              const isLlm = idLower.includes('gemma') || idLower.includes('gemini') || idLower.includes('llama') || idLower.includes('chat') || idLower.includes('instruct');
+              map.set(mId, {
+                id: mId,
+                caps: isWhisper ? ['stt'] : isLlm ? ['llm_stt', 'summarizer'] : ['summarizer'],
+              });
+            }
+          }
+          return Array.from(map.values());
+        });
+        setDetectMsg({ ok: true, text: `Fetched ${res.models.length} models from endpoint.` });
       } else {
-        setDetectMsg({ ok: false, text: res.error || 'No models discovered from endpoint. You can write model names manually.' });
+        setDetectMsg({ ok: false, text: res.error || 'No models discovered from endpoint. You can add model names manually below.' });
       }
     } catch (e) {
-      setDetectMsg({ ok: false, text: e.message || 'Detection failed. You can write model names manually.' });
+      setDetectMsg({ ok: false, text: e.message || 'Detection failed. You can add model names manually below.' });
     } finally {
       setDetecting(false);
     }
@@ -106,17 +171,17 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
     setBusy(true);
     setErr(null);
     try {
-      const parsedModels = modelsStr.trim()
-        ? modelsStr.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean)
-        : null;
+      const hasStt = modelList.some((m) => m.caps.includes('stt') || m.caps.includes('llm_stt'));
+      const hasSum = modelList.some((m) => m.caps.includes('summarizer'));
+      const computedCaps = hasStt && hasSum ? 'both' : hasStt ? 'stt' : hasSum ? 'summarizer' : 'both';
 
       const payload = {
         name: name.trim(),
         kind,
-        caps: caps || 'both',
+        caps: computedCaps,
         baseUrl: baseUrl.trim() || null,
         apiKey: apiKey.trim() || undefined,
-        models: parsedModels,
+        models: modelList.length > 0 ? modelList : null,
       };
       if (isNew) {
         payload.id = id.trim().toLowerCase();
@@ -158,24 +223,7 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
           </div>
         </Field>
 
-        <Field label="Capabilities" hint="Whether this endpoint does summarization, audio transcription (STT), or both">
-          <div className="relative">
-            <select
-              value={caps}
-              onChange={(e) => setCaps(e.target.value)}
-              className="input appearance-none pr-9 cursor-pointer"
-            >
-              {PROVIDER_CAPS.map((c) => (
-                <option key={c.id} value={c.id}>{c.label}</option>
-              ))}
-            </select>
-            <Chevron />
-          </div>
-        </Field>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <Field label="Identifier (slug)" hint={isNew ? 'Unique key used by /setup, e.g. "groq" or "vllm"' : 'Cannot be changed'}>
+        <Field label="Identifier (slug)" hint={isNew ? 'Unique key, e.g. "groq" or "pc-vigno"' : 'Cannot be changed'}>
           <input
             type="text"
             disabled={!isNew}
@@ -186,7 +234,9 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
             className="input disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </Field>
+      </div>
 
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="Display Name">
           <input
             type="text"
@@ -197,24 +247,24 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
             className="input"
           />
         </Field>
-      </div>
 
-      <Field label="Base URL" hint={kind === 'gemini' ? 'Optional for Gemini (defaults to Google AI endpoint)' : selectedKind.defaultUrl ? `e.g. ${selectedKind.defaultUrl}` : undefined}>
-        <input
-          type="text"
-          value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
-          placeholder={selectedKind.defaultUrl || 'https://api.example.com/v1'}
-          className="input"
-        />
-      </Field>
+        <Field label="Base URL" hint={kind === 'gemini' ? 'Optional for Gemini' : selectedKind.defaultUrl ? `e.g. ${selectedKind.defaultUrl}` : undefined}>
+          <input
+            type="text"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder={selectedKind.defaultUrl || 'https://api.example.com/v1'}
+            className="input"
+          />
+        </Field>
+      </div>
 
       <Field
         label="API Key"
         hint={
           !isNew && initial?.hasKey
             ? 'Key already configured. Enter a new key only to replace it.'
-            : kind === 'ollama' ? 'Optional for local Ollama' : 'Optional for local endpoints; stored securely in database'
+            : kind === 'ollama' ? 'Optional for local Ollama' : 'Stored securely in database'
         }
       >
         <input
@@ -226,34 +276,115 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
         />
       </Field>
 
+      {/* Per-Fetched Model Capability Management Box */}
       <Field
-        label="Exposed Models"
-        hint="Comma-separated list of model names or IDs. If left blank, models will be fetched live on demand when configuring."
+        label="Fetched Models & Capabilities"
+        hint="Define the models exposed by this provider and check what each model is used for."
       >
-        <div className="space-y-1.5">
+        <div className="space-y-3 p-3 rounded-lg border border-border bg-surface-2/30">
           <div className="flex gap-2">
             <input
               type="text"
-              value={modelsStr}
-              onChange={(e) => setModelsStr(e.target.value)}
-              placeholder="e.g. llama3.2, deepseek-r1:8b"
-              className="input flex-1"
+              value={newModelName}
+              onChange={(e) => setNewModelName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddModel(); } }}
+              placeholder="Add model name (e.g. whisper-large-v3, gemma-4-e4b)"
+              className="input flex-1 text-xs"
             />
+            <button
+              type="button"
+              onClick={handleAddModel}
+              disabled={!newModelName.trim()}
+              className="btn btn-ghost !py-1.5 text-xs shrink-0"
+            >
+              Add model
+            </button>
             <button
               type="button"
               onClick={handleDetect}
               disabled={detecting}
-              className="btn btn-ghost !py-1.5 shrink-0 text-xs inline-flex items-center gap-1.5"
+              className="btn btn-primary !py-1.5 shrink-0 text-xs inline-flex items-center gap-1.5"
               title="Query endpoint for available models"
             >
               <Icon.Refresh width={13} height={13} className={detecting ? 'animate-spin' : ''} />
-              {detecting ? 'Detecting…' : 'Detect models'}
+              {detecting ? 'Fetching…' : 'Fetch models'}
             </button>
           </div>
+
           {detectMsg && (
             <p className={`text-xs ${detectMsg.ok ? 'text-accent' : 'text-warn'}`}>
               {detectMsg.text}
             </p>
+          )}
+
+          {modelList.length === 0 ? (
+            <p className="text-xs text-muted italic py-2 text-center">
+              No models configured yet. Click "Fetch models" or add model names above.
+            </p>
+          ) : (
+            <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+              {modelList.map((m) => {
+                const hasStt = m.caps.includes('stt');
+                const hasLlmStt = m.caps.includes('llm_stt');
+                const hasSum = m.caps.includes('summarizer');
+                return (
+                  <div
+                    key={m.id}
+                    className="flex items-center justify-between gap-3 p-2 rounded-md bg-surface-1 border border-border/70 text-xs"
+                  >
+                    <span className="font-mono font-medium text-ink truncate flex-1" title={m.id}>
+                      {m.id}
+                    </span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => toggleCap(m.id, 'stt')}
+                        className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                          hasStt
+                            ? 'bg-blue-500/20 text-blue-400 border border-blue-500/40'
+                            : 'bg-surface-3 text-muted hover:text-ink'
+                        }`}
+                        title="Transcription via standard /audio/transcriptions"
+                      >
+                        STT
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => toggleCap(m.id, 'llm_stt')}
+                        className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                          hasLlmStt
+                            ? 'bg-purple-500/20 text-purple-400 border border-purple-500/40'
+                            : 'bg-surface-3 text-muted hover:text-ink'
+                        }`}
+                        title="Transcription via LLM /chat/completions input_audio"
+                      >
+                        LLM STT
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => toggleCap(m.id, 'summarizer')}
+                        className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                          hasSum
+                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                            : 'bg-surface-3 text-muted hover:text-ink'
+                        }`}
+                        title="Meeting summarizer / notes generator"
+                      >
+                        Summarizer
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveModel(m.id)}
+                        className="text-muted hover:text-error ml-1 p-1"
+                        title="Remove model"
+                      >
+                        &times;
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       </Field>

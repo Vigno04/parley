@@ -207,3 +207,44 @@ test('GET /api/meetings/:id reports hasAudio: true when audio files exist on dis
   }
 });
 
+test('GET /api/meetings/:id/audio-tracks and /audio-clip stream valid WAV', async () => {
+  const { dir, cleanup } = tmp();
+  const db = openDb(':memory:');
+  const app = express();
+  app.use(express.json());
+  app.use('/api', apiRouter({ db, client: null, env: { dataDir: dir } }));
+  const { base, close } = await listen(app);
+  try {
+    const id = db.createMeeting({ guildId: 'g1', channelId: 'c', channelName: 'gen', startedAt: 'now' });
+    db.addAttendee(id, 'u123', 'Alice');
+    const audioDir = join(dir, 'audio', String(id));
+    mkdirSync(audioDir, { recursive: true });
+    // Write 320 bytes of dummy audio data
+    writeFileSync(join(audioDir, 'u123_2000.pcm'), Buffer.alloc(320));
+
+    // 1. Verify audio-tracks listing
+    const tracksRes = await fetch(`${base}/api/meetings/${id}/audio-tracks`);
+    assert.equal(tracksRes.status, 200);
+    const tracksJson = await tracksRes.json();
+    assert.equal(tracksJson.ok, true);
+    assert.equal(tracksJson.count, 1);
+    assert.equal(tracksJson.tracks[0].userId, 'u123');
+    assert.equal(tracksJson.tracks[0].startMs, 2000);
+    assert.equal(tracksJson.tracks[0].displayName, 'Alice');
+    assert.ok(tracksJson.tracks[0].audioUrl.includes('audio-clip?userId=u123&startMs=2000'));
+
+    // 2. Verify audio-clip stream as WAV
+    const clipRes = await fetch(`${base}/api/meetings/${id}/audio-clip?userId=u123&startMs=2000`);
+    assert.equal(clipRes.status, 200);
+    assert.equal(clipRes.headers.get('content-type'), 'audio/wav');
+    const arrayBuf = await clipRes.arrayBuffer();
+    const clipBuf = Buffer.from(arrayBuf);
+    assert.equal(clipBuf.length, 320 + 44);
+    assert.equal(clipBuf.subarray(0, 4).toString('ascii'), 'RIFF');
+    assert.equal(clipBuf.subarray(8, 12).toString('ascii'), 'WAVE');
+  } finally {
+    close();
+    cleanup();
+  }
+});
+

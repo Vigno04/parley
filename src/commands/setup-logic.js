@@ -167,6 +167,13 @@ export function validateSetup(input, dbOrEnv) {
     patch.summaryPrompt = prompt;
   }
 
+  if (input.sttPrompt === null) {
+    patch.sttPrompt = null;
+  } else if (input.sttPrompt !== undefined) {
+    const prompt = typeof input.sttPrompt === 'string' ? input.sttPrompt.trim() : '';
+    patch.sttPrompt = prompt || null;
+  }
+
   return { ok: true, patch };
 }
 

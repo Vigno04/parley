@@ -141,7 +141,7 @@ def transcribe(file: UploadFile = File(...), model: str = Form("small"), languag
             segments, info = batched.transcribe(
                 path, language=lang, word_timestamps=True, batch_size=_resolve_batch_size())
         else:
-            segments, info = m.transcribe(path, language=lang, word_timestamps=True)
+            segments, info = m.transcribe(path, language=lang, word_timestamps=True, vad_filter=True)
         words, texts = [], []
         for seg in segments:
             texts.append(seg.text)
