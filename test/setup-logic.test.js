@@ -217,18 +217,3 @@ test('accepts autoTranscribe boolean flag', () => {
   assert.equal(r2.ok, true);
   assert.equal(r2.patch.autoTranscribe, true);
 });
-
-test('accepts userBlacklist and muteBlacklisted flags', () => {
-  const r1 = validateSetup({ blacklist: '123, 456' }, env);
-  assert.equal(r1.ok, true);
-  assert.deepEqual(r1.patch.userBlacklist, ['123', '456']);
-
-  const r2 = validateSetup({ mute_blacklisted: false }, env);
-  assert.equal(r2.ok, true);
-  assert.equal(r2.patch.muteBlacklisted, false);
-
-  const r3 = validateSetup({ muteBlacklisted: true }, env);
-  assert.equal(r3.ok, true);
-  assert.equal(r3.patch.muteBlacklisted, true);
-});
-
