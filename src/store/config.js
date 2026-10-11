@@ -1,3 +1,5 @@
+import { parseBlacklist, isUserBlacklisted } from '../voice/blacklist.js';
+
 export const DEFAULTS = {
   summarizerEnabled: true,
   autoTranscribe: true,
@@ -21,6 +23,7 @@ export const DEFAULTS = {
   summaryPrompt: null,
   // null = no special vocabulary/glossary prompt; when set, passed to STT/LLM STT
   sttPrompt: null,
+  userBlacklist: [],
 };
 
 const COLS = {
@@ -41,6 +44,7 @@ const COLS = {
   recordingRetention: 'recording_retention',
   summaryPrompt: 'summary_prompt',
   sttPrompt: 'stt_prompt',
+  userBlacklist: 'user_blacklist',
 };
 
 function fromRow(row) {
@@ -62,6 +66,7 @@ function fromRow(row) {
     recordingRetention: row.recording_retention ?? DEFAULTS.recordingRetention,
     summaryPrompt: row.summary_prompt ?? DEFAULTS.summaryPrompt,
     sttPrompt: row.stt_prompt ?? DEFAULTS.sttPrompt,
+    userBlacklist: parseBlacklist(row.user_blacklist),
   };
 }
 
@@ -75,11 +80,15 @@ export function setGuildConfig(db, guildId, patch) {
   // Drop undefined keys (node:sqlite cannot bind undefined) and pin guildId so a
   // stray patch key can't corrupt the row identity or the returned object.
   const safePatch = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+  if (safePatch.userBlacklist !== undefined) {
+    safePatch.userBlacklist = parseBlacklist(safePatch.userBlacklist);
+  }
   const merged = { ...current, ...safePatch, guildId };
+  const userBlacklistJson = JSON.stringify(parseBlacklist(merged.userBlacklist));
   db.sql.prepare(
     `INSERT OR REPLACE INTO guild_config
-       (guild_id, summarizer_enabled, auto_transcribe, summarizer_provider, summarizer_model, summarizer_fallback_provider, summarizer_fallback_model, stt_provider, stt_model, whisper_model, notes_channel_id, use_thread, auto_join, language, summary_language, recording_retention, summary_prompt, stt_prompt)
-     VALUES (@guildId, @summarizerEnabled, @autoTranscribe, @summarizerProvider, @summarizerModel, @summarizerFallbackProvider, @summarizerFallbackModel, @sttProvider, @sttModel, @whisperModel, @notesChannelId, @useThread, @autoJoin, @language, @summaryLanguage, @recordingRetention, @summaryPrompt, @sttPrompt)`
+       (guild_id, summarizer_enabled, auto_transcribe, summarizer_provider, summarizer_model, summarizer_fallback_provider, summarizer_fallback_model, stt_provider, stt_model, whisper_model, notes_channel_id, use_thread, auto_join, language, summary_language, recording_retention, summary_prompt, stt_prompt, user_blacklist)
+     VALUES (@guildId, @summarizerEnabled, @autoTranscribe, @summarizerProvider, @summarizerModel, @summarizerFallbackProvider, @summarizerFallbackModel, @sttProvider, @sttModel, @whisperModel, @notesChannelId, @useThread, @autoJoin, @language, @summaryLanguage, @recordingRetention, @summaryPrompt, @sttPrompt, @userBlacklist)`
   ).run({
     guildId,
     summarizerEnabled: merged.summarizerEnabled ? 1 : 0,
@@ -99,8 +108,11 @@ export function setGuildConfig(db, guildId, patch) {
     recordingRetention: merged.recordingRetention,
     summaryPrompt: merged.summaryPrompt,
     sttPrompt: merged.sttPrompt,
+    userBlacklist: userBlacklistJson,
   });
   return merged;
 }
+
+export { parseBlacklist, isUserBlacklisted };
 
 export const CONFIG_COLS = COLS;

@@ -18,6 +18,7 @@ import { handleAutocomplete } from './commands/autocomplete.js';
 import { renderNotes, chunk } from './delivery/discord-notes.js';
 import { postNotes } from './delivery/post.js';
 import { sweepExpiredAudio } from './store/reconcile.js';
+import { isUserBlacklisted } from './voice/blacklist.js';
 
 export function startBot({ db, audioRoot }) {
   validateEnv(); // throws with a clear message if token/client id are missing
@@ -48,12 +49,18 @@ export function startBot({ db, audioRoot }) {
   const manager = new MeetingManager({
     db, audioRoot,
     startCapture: ({ meetingId, connection, guild, audioDir }) => {
+      const cfg = getGuildConfig(db, guild.id);
       const registry = new TrackRegistry();
       const { stopAll } = attachCapture({
         connection, guild, audioDir, registry,
+        isBlacklisted: (userId, member) => isUserBlacklisted(cfg.userBlacklist, userId, member),
         // Record latecomers the moment they first speak (INSERT OR IGNORE keeps
         // it idempotent), so attendees isn't limited to the start snapshot.
-        onSpeaker: (userId, displayName) => db.addAttendee(meetingId, userId, displayName),
+        onSpeaker: (userId, displayName) => {
+          if (!isUserBlacklisted(cfg.userBlacklist, userId)) {
+            db.addAttendee(meetingId, userId, displayName);
+          }
+        },
       });
       return { registry, stopAll };
     },
@@ -98,8 +105,8 @@ export function startBot({ db, audioRoot }) {
   });
   const joiningInProgress = new Set(); // "guildId:channelId" strings
   const finalizingLostConnections = new Set(); // "guildId:channelId" strings — guards against stopping a lost session twice
-  function humanCount(channel) {
-    return channel.members.filter((m) => !m.user.bot).size;
+  function humanCount(channel, blacklist = []) {
+    return channel.members.filter((m) => !m.user.bot && !isUserBlacklisted(blacklist, m.id, m)).size;
   }
   function setRecIndicator(guild, on) {
     guild.members.me?.setNickname(on ? '[REC] Meeting Bot' : null).catch((e) => {
@@ -205,7 +212,10 @@ export function startBot({ db, audioRoot }) {
       connection.on(VoiceConnectionStatus.Destroyed, async () => {
         await finalizeLostConnection(channel.guild.id, channel.id, 'Voice connection destroyed');
       });
-      const attendees = channel.members.filter((m) => !m.user.bot).map((m) => ({ id: m.id, displayName: m.displayName }));
+      const cfg = getGuildConfig(db, channel.guild.id);
+      const attendees = channel.members
+        .filter((m) => !m.user.bot && !isUserBlacklisted(cfg.userBlacklist, m.id, m))
+        .map((m) => ({ id: m.id, displayName: m.displayName }));
       const meetingId = manager.start({ guildId: channel.guild.id, channelId: channel.id, channelName: channel.name, connection, guild: channel.guild, attendees });
       console.log(`[meeting] Started #${meetingId} in ${channel.name} with ${attendees.length} attendee(s)`);
       setRecIndicator(channel.guild, true);
@@ -266,7 +276,7 @@ export function startBot({ db, audioRoot }) {
     if (!channel || channel.type !== ChannelType.GuildVoice) return;
     const cfg = getGuildConfig(db, guild.id);
     const connected = manager.isActive(guild.id, channel.id);
-    const count = humanCount(channel);
+    const count = humanCount(channel, cfg.userBlacklist);
     debugLog(`[vSU] guild=${guild.id} channel=${channel.id} user=${newState.id} old=${oldState.channelId} new=${newState.channelId} humans=${count} connected=${connected} autoJoin=${cfg.autoJoin}`);
     if (shouldAutoJoin({ humanCount: count, autoJoin: cfg.autoJoin, connected })) {
       debugLog(`[vSU] auto-join triggered for ${channel.id}`);
@@ -391,6 +401,7 @@ export function startBot({ db, audioRoot }) {
           summary_language: interaction.options.getString('summary_language') ?? undefined,
           summarizer_enabled: interaction.options.getBoolean('summarizer_enabled') ?? undefined,
           auto_transcribe: interaction.options.getBoolean('auto_transcribe') ?? undefined,
+          userBlacklist: interaction.options.getString('blacklist') ?? undefined,
         };
         const result = validateSetup(input, db);
         if (!result.ok) return interaction.reply({ content: `❌ ${result.error}`, ephemeral: true });

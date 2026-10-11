@@ -233,6 +233,7 @@ export default function ServerSettings() {
   const providers = data?.providers || [];
   const sttProviders = data?.sttProviders || [];
   const channels = data?.channels || [];
+  const members = data?.members || [];
   const languages = data?.languages || [];
 
   const summarizerProviders = providers.filter(
@@ -545,7 +546,132 @@ export default function ServerSettings() {
             desc="Join automatically when two or more people are in a voice channel. Equivalent to /setup autojoin."
           />
         </Card>
+
+        {/* 4. User & Bot Blacklist */}
+        <BlacklistCard
+          blacklist={c?.userBlacklist || []}
+          members={members}
+          onSave={save}
+        />
       </div>
     </Page>
+  );
+}
+
+function BlacklistCard({ blacklist = [], members = [], onSave }) {
+  const [inputVal, setInputVal] = useState('');
+  const [selectedMember, setSelectedMember] = useState('');
+
+  const currentList = Array.isArray(blacklist) ? blacklist : [];
+
+  const handleAdd = (val) => {
+    const trimmed = (val || '').trim();
+    if (!trimmed) return;
+    const clean = trimmed.replace(/[<@!>]/g, '');
+    if (!clean) return;
+    if (currentList.some((x) => x.toLowerCase() === clean.toLowerCase())) return;
+    const next = [...currentList, clean];
+    onSave({ userBlacklist: next });
+    setInputVal('');
+    setSelectedMember('');
+  };
+
+  const handleRemove = (item) => {
+    const next = currentList.filter((x) => x !== item);
+    onSave({ userBlacklist: next });
+  };
+
+  return (
+    <Card
+      title="User & Bot Blacklist"
+      desc="Ignore specific users or bots completely (ideal for music bots like FredBoat, Lofi, etc.)."
+    >
+      <div className="space-y-3">
+        <p className="text-xs text-muted leading-relaxed">
+          Blacklisted accounts will <strong>never have audio recorded</strong>, will <strong>not appear as attendees</strong> in meetings or transcripts, and will <strong>not be counted</strong> toward auto-join or auto-leave. It's like they do not exist.
+        </p>
+
+        <div className="flex flex-col sm:flex-row gap-2">
+          {members.length > 0 && (
+            <div className="relative flex-1">
+              <select
+                value={selectedMember}
+                onChange={(e) => {
+                  setSelectedMember(e.target.value);
+                  if (e.target.value) handleAdd(e.target.value);
+                }}
+                className="input appearance-none pr-9 cursor-pointer text-sm"
+              >
+                <option value="">— Pick server member / bot to blacklist —</option>
+                {members.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.isBot ? '🤖 ' : '👤 '} {m.displayName} (@{m.username})
+                  </option>
+                ))}
+              </select>
+              <Chevron />
+            </div>
+          )}
+          <div className="flex gap-2 flex-1">
+            <input
+              type="text"
+              placeholder="Or enter User ID / username..."
+              value={inputVal}
+              onChange={(e) => setInputVal(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleAdd(inputVal);
+                }
+              }}
+              className="input text-sm flex-1"
+            />
+            <button
+              type="button"
+              onClick={() => handleAdd(inputVal)}
+              disabled={!inputVal.trim()}
+              className="btn btn-secondary !py-1.5 px-3 text-xs shrink-0"
+            >
+              Add
+            </button>
+          </div>
+        </div>
+
+        {currentList.length > 0 ? (
+          <div className="flex flex-wrap gap-2 pt-1">
+            {currentList.map((entry) => {
+              const matched = members.find(
+                (m) => m.id === entry || m.username.toLowerCase() === entry.toLowerCase()
+              );
+              return (
+                <span
+                  key={entry}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface-2 border border-border text-xs text-ink"
+                >
+                  <span className="font-mono text-muted text-[11px]">{matched?.isBot ? '🤖' : '🚫'}</span>
+                  <span className="font-medium">
+                    {matched ? `${matched.displayName} (@${matched.username})` : entry}
+                  </span>
+                  {matched && <span className="text-[10px] text-faint">({entry})</span>}
+                  <button
+                    type="button"
+                    onClick={() => handleRemove(entry)}
+                    className="ml-1 text-muted hover:text-error transition-colors text-sm leading-none"
+                    title="Remove from blacklist"
+                    aria-label={`Remove ${entry} from blacklist`}
+                  >
+                    ×
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="text-xs text-muted/80 italic pt-1">
+            No users or bots blacklisted on this server yet.
+          </p>
+        )}
+      </div>
+    </Card>
   );
 }

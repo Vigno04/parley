@@ -1,6 +1,7 @@
 import { LANGUAGE_CODES, SUMMARY_LANGUAGE_VALUES } from '../adapters/summarizer/languages.js';
 import { sttProviderReady } from '../adapters/stt/index.js';
 import { DEFAULT_MODELS } from '../adapters/summarizer/models.js';
+import { parseBlacklist } from '../voice/blacklist.js';
 
 const WHISPER_MODELS = ['tiny', 'base', 'small', 'medium', 'large-v3', 'large-v3-turbo'];
 const KNOWN_PROVIDERS = ['gemini', 'openai', 'opencode', 'openrouter', 'ollama'];
@@ -172,6 +173,11 @@ export function validateSetup(input, dbOrEnv) {
   } else if (input.sttPrompt !== undefined) {
     const prompt = typeof input.sttPrompt === 'string' ? input.sttPrompt.trim() : '';
     patch.sttPrompt = prompt || null;
+  }
+
+  const blacklistInput = input.userBlacklist !== undefined ? input.userBlacklist : (input.user_blacklist !== undefined ? input.user_blacklist : input.blacklist);
+  if (blacklistInput !== undefined) {
+    patch.userBlacklist = parseBlacklist(blacklistInput);
   }
 
   return { ok: true, patch };

@@ -115,3 +115,10 @@ test('sttPrompt defaults to null and can be configured', () => {
   assert.equal(getGuildConfig(db, 'g').sttPrompt, 'Neverwinter, Faerun');
 });
 
+test('userBlacklist defaults to empty array and can be configured', () => {
+  const db = openDb(':memory:');
+  assert.deepEqual(getGuildConfig(db, 'g').userBlacklist, []);
+  setGuildConfig(db, 'g', { userBlacklist: ['123456789', 'music_bot'] });
+  assert.deepEqual(getGuildConfig(db, 'g').userBlacklist, ['123456789', 'music_bot']);
+});
+

@@ -24,7 +24,7 @@ export class TrackRegistry {
 // voice connection); validated by the manual integration checklist.
 // `onSpeaker(userId, displayName)` fires the first time a member speaks, so the
 // caller can record latecomers who joined after the meeting started.
-export function attachCapture({ connection, guild, audioDir, registry, now = () => Date.now(), onSpeaker = null }) {
+export function attachCapture({ connection, guild, audioDir, registry, now = () => Date.now(), onSpeaker = null, isBlacklisted = null }) {
   mkdirSync(audioDir, { recursive: true });
 
   const onStart = (userId) => {
@@ -37,6 +37,7 @@ export function attachCapture({ connection, guild, audioDir, registry, now = () 
       if (registry.isActive(userId)) return;
       const member = guild.members.cache.get(userId);
       if (!member || member.user.bot) return;
+      if (isBlacklisted && isBlacklisted(userId, member)) return;
 
       const startMs = now();
       const pcmPath = `${audioDir}/${pcmName(userId, startMs)}`;

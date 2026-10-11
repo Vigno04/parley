@@ -105,3 +105,35 @@ test('a throwing track start is swallowed and does not crash the emitter', async
     assert.equal(registry.list().length, 0);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('attachCapture skips blacklisted users entirely', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'parley-cap4-'));
+  try {
+    const connection = fakeConnection();
+    const guild = fakeGuild({
+      u1: { displayName: 'MusicBot', user: { bot: false } },
+      u2: { displayName: 'Alice', user: { bot: false } },
+    });
+    const { TrackRegistry } = await import('../src/voice/capture.js');
+    const registry = new TrackRegistry();
+    const seenSpeakers = [];
+    const { stopAll } = attachCapture({
+      connection,
+      guild,
+      audioDir: dir,
+      registry,
+      isBlacklisted: (id) => id === 'u1',
+      onSpeaker: (id, name) => seenSpeakers.push([id, name]),
+    });
+
+    connection.receiver.speaking.emit('start', 'u1'); // blacklisted
+    connection.receiver.speaking.emit('start', 'u2'); // allowed
+    await new Promise((r) => setImmediate(r));
+
+    assert.equal(registry.isActive('u1'), false);
+    assert.equal(registry.list().length, 1);
+    assert.equal(registry.list()[0].userId, 'u2');
+    assert.deepEqual(seenSpeakers, [['u2', 'Alice']]);
+    await stopAll();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

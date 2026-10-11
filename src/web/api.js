@@ -597,7 +597,7 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null, env: 
     const id = Number(req.params.id);
     const meeting = db.getMeeting(id);
     if (!meeting) return res.status(404).json({ error: 'meeting not found' });
-    const job = comparisonJobs.get(id);
+    const job = compareJobs.get(id);
     if (job?.active && job.abortController) {
       job.abortController.abort();
       job.active = false;
@@ -684,6 +684,14 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null, env: 
       ? [...guild.channels.cache.filter((c) => c.type === ChannelType.GuildText).values()]
           .map((c) => ({ id: c.id, name: c.name }))
       : [];
+    const members = guild
+      ? [...guild.members.cache.values()].map((m) => ({
+          id: m.id,
+          username: m.user?.username || m.id,
+          displayName: m.displayName || m.user?.username || m.id,
+          isBot: !!m.user?.bot,
+        }))
+      : [];
     const provs = availableProviders(db);
     const secrets = {};
     for (const p of provs) {
@@ -693,7 +701,9 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null, env: 
       config: getGuildConfig(db, req.params.g),
 defaultSummaryPrompt: SUMMARY_PROMPT,
       providers: provs,
-      sttProviders: availableSttProviders(db, env),      channels,
+      sttProviders: availableSttProviders(db, env),
+      channels,
+      members,
       secrets,
       defaultModels: DEFAULT_MODELS,
       languages: LANGUAGES,
