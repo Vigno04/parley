@@ -122,3 +122,13 @@ test('userBlacklist defaults to empty array and can be configured', () => {
   assert.deepEqual(getGuildConfig(db, 'g').userBlacklist, ['123456789', 'music_bot']);
 });
 
+test('muteBlacklisted defaults to true and can be toggled to false', () => {
+  const db = openDb(':memory:');
+  assert.equal(getGuildConfig(db, 'g').muteBlacklisted, true);
+  setGuildConfig(db, 'g', { muteBlacklisted: false });
+  assert.equal(getGuildConfig(db, 'g').muteBlacklisted, false);
+  setGuildConfig(db, 'g', { muteBlacklisted: true });
+  assert.equal(getGuildConfig(db, 'g').muteBlacklisted, true);
+});
+
+

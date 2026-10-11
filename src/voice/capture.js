@@ -36,8 +36,9 @@ export function attachCapture({ connection, guild, audioDir, registry, now = () 
     try {
       if (registry.isActive(userId)) return;
       const member = guild.members.cache.get(userId);
-      if (!member || member.user.bot) return;
+      if (!member) return;
       if (isBlacklisted && isBlacklisted(userId, member)) return;
+      if (member.user.bot) return;
 
       const startMs = now();
       const pcmPath = `${audioDir}/${pcmName(userId, startMs)}`;

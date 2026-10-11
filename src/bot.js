@@ -46,6 +46,34 @@ export function startBot({ db, audioRoot }) {
     }
   });
 
+  const mutedByParley = new Map(); // key "guildId:channelId" -> Set of userIds
+  async function tryMuteMember(member, key) {
+    try {
+      if (member && !member.voice?.serverMute && member.voice?.channelId) {
+        await member.voice.setMute(true, 'Blacklisted by Parley');
+        if (key) {
+          if (!mutedByParley.has(key)) mutedByParley.set(key, new Set());
+          mutedByParley.get(key).add(member.id);
+        }
+        return true;
+      }
+    } catch (e) {
+      debugLog(`[voice] Could not server-mute blacklisted member ${member?.id}: ${e.message}`);
+    }
+    return false;
+  }
+  async function tryUnmuteMember(member) {
+    try {
+      if (member && member.voice?.serverMute) {
+        await member.voice.setMute(false, 'Meeting ended');
+        return true;
+      }
+    } catch (e) {
+      debugLog(`[voice] Could not unmute member ${member?.id}: ${e.message}`);
+    }
+    return false;
+  }
+
   const manager = new MeetingManager({
     db, audioRoot,
     startCapture: ({ meetingId, connection, guild, audioDir }) => {
@@ -53,7 +81,13 @@ export function startBot({ db, audioRoot }) {
       const registry = new TrackRegistry();
       const { stopAll } = attachCapture({
         connection, guild, audioDir, registry,
-        isBlacklisted: (userId, member) => isUserBlacklisted(cfg.userBlacklist, userId, member),
+        isBlacklisted: (userId, member) => {
+          const blacklisted = isUserBlacklisted(cfg.userBlacklist, userId, member);
+          if (blacklisted && cfg.muteBlacklisted && member) {
+            tryMuteMember(member, `${guild.id}:${member.voice?.channelId}`);
+          }
+          return blacklisted;
+        },
         // Record latecomers the moment they first speak (INSERT OR IGNORE keeps
         // it idempotent), so attendees isn't limited to the start snapshot.
         onSpeaker: (userId, displayName) => {
@@ -213,6 +247,13 @@ export function startBot({ db, audioRoot }) {
         await finalizeLostConnection(channel.guild.id, channel.id, 'Voice connection destroyed');
       });
       const cfg = getGuildConfig(db, channel.guild.id);
+      if (cfg.muteBlacklisted) {
+        for (const [_, m] of channel.members) {
+          if (isUserBlacklisted(cfg.userBlacklist, m.id, m)) {
+            tryMuteMember(m, joinKey);
+          }
+        }
+      }
       const attendees = channel.members
         .filter((m) => !m.user.bot && !isUserBlacklisted(cfg.userBlacklist, m.id, m))
         .map((m) => ({ id: m.id, displayName: m.displayName }));
@@ -229,12 +270,30 @@ export function startBot({ db, audioRoot }) {
   }
   async function stopAndLeave(guildId, channelId) {
     console.log(`[meeting] Stopping meeting in guild:${guildId} channel:${channelId}`);
+    const key = `${guildId}:${channelId}`;
+    const mutedSet = mutedByParley.get(key) || new Set();
+    mutedByParley.delete(key);
+    const guild = client.guilds.cache.get(guildId);
+    if (guild) {
+      for (const userId of mutedSet) {
+        const m = guild.members.cache.get(userId);
+        if (m) tryUnmuteMember(m);
+      }
+      const channel = guild.channels.cache.get(channelId);
+      const cfg = getGuildConfig(db, guildId);
+      if (cfg.muteBlacklisted && channel?.members) {
+        for (const [_, m] of channel.members) {
+          if (isUserBlacklisted(cfg.userBlacklist, m.id, m)) {
+            tryUnmuteMember(m);
+          }
+        }
+      }
+    }
     // stop() resolves as soon as capture is flushed; the transcribe/summarize
     // pipeline runs in the background (await result.done only if you must wait).
     await manager.stop(guildId, channelId);
     const conn = getVoiceConnection(guildId);
     if (conn && conn.state.status !== VoiceConnectionStatus.Destroyed) conn.destroy();
-    const guild = client.guilds.cache.get(guildId);
     if (guild) setRecIndicator(guild, false);
   }
 
@@ -277,6 +336,14 @@ export function startBot({ db, audioRoot }) {
     const cfg = getGuildConfig(db, guild.id);
     const connected = manager.isActive(guild.id, channel.id);
     const count = humanCount(channel, cfg.userBlacklist);
+    const key = `${guild.id}:${channel.id}`;
+
+    if (connected && cfg.muteBlacklisted && newState.channelId === channel.id && newState.member) {
+      if (isUserBlacklisted(cfg.userBlacklist, newState.member.id, newState.member)) {
+        tryMuteMember(newState.member, key);
+      }
+    }
+
     debugLog(`[vSU] guild=${guild.id} channel=${channel.id} user=${newState.id} old=${oldState.channelId} new=${newState.channelId} humans=${count} connected=${connected} autoJoin=${cfg.autoJoin}`);
     if (shouldAutoJoin({ humanCount: count, autoJoin: cfg.autoJoin, connected })) {
       debugLog(`[vSU] auto-join triggered for ${channel.id}`);
@@ -402,6 +469,7 @@ export function startBot({ db, audioRoot }) {
           summarizer_enabled: interaction.options.getBoolean('summarizer_enabled') ?? undefined,
           auto_transcribe: interaction.options.getBoolean('auto_transcribe') ?? undefined,
           userBlacklist: interaction.options.getString('blacklist') ?? undefined,
+          muteBlacklisted: interaction.options.getBoolean('mute_blacklisted') ?? undefined,
         };
         const result = validateSetup(input, db);
         if (!result.ok) return interaction.reply({ content: `❌ ${result.error}`, ephemeral: true });

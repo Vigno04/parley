@@ -551,6 +551,7 @@ export default function ServerSettings() {
         <BlacklistCard
           blacklist={c?.userBlacklist || []}
           members={members}
+          muteBlacklisted={c?.muteBlacklisted !== false}
           onSave={save}
         />
       </div>
@@ -558,7 +559,7 @@ export default function ServerSettings() {
   );
 }
 
-function BlacklistCard({ blacklist = [], members = [], onSave }) {
+function BlacklistCard({ blacklist = [], members = [], muteBlacklisted = true, onSave }) {
   const [inputVal, setInputVal] = useState('');
   const [selectedMember, setSelectedMember] = useState('');
 
@@ -671,6 +672,15 @@ function BlacklistCard({ blacklist = [], members = [], onSave }) {
             No users or bots blacklisted on this server yet.
           </p>
         )}
+
+        <div className="border-t border-border pt-3 mt-3">
+          <Switch
+            checked={muteBlacklisted !== false}
+            onChange={(e) => onSave({ muteBlacklisted: e.target.checked })}
+            label="Server-mute blacklisted accounts in voice"
+            desc="Automatically server-mute blacklisted bots and users while a meeting is recording, and unmute them when it ends (requires Mute Members bot permission)."
+          />
+        </div>
       </div>
     </Card>
   );

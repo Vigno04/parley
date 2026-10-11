@@ -180,6 +180,11 @@ export function validateSetup(input, dbOrEnv) {
     patch.userBlacklist = parseBlacklist(blacklistInput);
   }
 
+  const muteBlacklistedInput = input.muteBlacklisted !== undefined ? input.muteBlacklisted : input.mute_blacklisted;
+  if (muteBlacklistedInput !== undefined) {
+    patch.muteBlacklisted = !!muteBlacklistedInput;
+  }
+
   return { ok: true, patch };
 }
 

@@ -36,7 +36,8 @@ export function buildCommands() {
         .addChoices(...LANGUAGES.map((l) => ({ name: l.name, value: l.code })), { name: 'Match transcription', value: 'match' }))
       .addBooleanOption((o) => o.setName('summarizer_enabled').setDescription('Enable or disable meeting summarization'))
       .addBooleanOption((o) => o.setName('auto_transcribe').setDescription('Start transcription immediately when meeting finishes'))
-      .addStringOption((o) => o.setName('blacklist').setDescription('Comma-separated user IDs or usernames to ignore (e.g. music bots)')),
+      .addStringOption((o) => o.setName('blacklist').setDescription('Comma-separated user IDs or usernames to ignore (e.g. music bots)'))
+      .addBooleanOption((o) => o.setName('mute_blacklisted').setDescription('Server-mute blacklisted accounts in voice during meetings')),
   ];
 }
 

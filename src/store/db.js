@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS guild_config (
   auto_transcribe INTEGER DEFAULT 1,
   summary_prompt TEXT,
   stt_prompt TEXT,
-  user_blacklist TEXT);
+  user_blacklist TEXT,
+  mute_blacklisted INTEGER DEFAULT 1);
 CREATE TABLE IF NOT EXISTS guilds (
   guild_id TEXT PRIMARY KEY,
   name TEXT,
@@ -133,6 +134,10 @@ export function openDb(path) {
   // Migration: add user_blacklist to guild_config
   if (!cols.some((c) => c.name === 'user_blacklist')) {
     sql.exec(`ALTER TABLE guild_config ADD COLUMN user_blacklist TEXT`);
+  }
+  // Migration: add mute_blacklisted to guild_config
+  if (!cols.some((c) => c.name === 'mute_blacklisted')) {
+    sql.exec(`ALTER TABLE guild_config ADD COLUMN mute_blacklisted INTEGER DEFAULT 1`);
   }
   // Migration: add per-stage timing metrics to dbs created before this column
   // existed (Measurement section of the speed plan).
