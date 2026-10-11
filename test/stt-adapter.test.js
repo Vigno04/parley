@@ -295,4 +295,22 @@ test('hallucination suppression drops media artifacts, YouTube credits, and repe
   assert.equal(filtered2.words.length, 1);
 });
 
+test('createSidecarSTT normalizes and suppresses hallucinations and low-confidence segments', async () => {
+  const { createSidecarSTT } = await import('../src/adapters/stt/sidecar.js');
+  const fakeFetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      text: 'Thanks for watching!',
+      words: [{ word: 'Thanks', start: 0, end: 1 }],
+      segments: [{ text: 'Thanks for watching!', no_speech_prob: 0.1 }],
+    }),
+  });
+  const sidecar = createSidecarSTT({ baseUrl: 'http://127.0.0.1:8000' }, { fetchImpl: fakeFetchImpl, readFile: async () => Buffer.from('RIFF') });
+  const result = await sidecar('/tmp/fake.wav');
+  assert.equal(result.text, '');
+  assert.equal(result.words.length, 0);
+});
+
+
 

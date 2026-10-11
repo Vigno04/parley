@@ -134,22 +134,53 @@ def transcribe(file: UploadFile = File(...), model: str = Form("small"), languag
         path = tmp.name
     try:
         lang = None if language == "auto" else language
+        transcribe_opts = {
+            "language": lang,
+            "word_timestamps": True,
+            "condition_on_previous_text": False,
+            "temperature": 0.0,
+            "no_speech_threshold": 0.6,
+            "log_prob_threshold": -1.0,
+            "compression_ratio_threshold": 2.4,
+            "vad_filter": True,
+        }
         # Prefer the batched pipeline (parallel VAD segments, 1.7-2.6x faster);
         # fall back to the plain model when batching is off/unavailable.
         batched = get_batched()
         if batched is not None:
             segments, info = batched.transcribe(
-                path, language=lang, word_timestamps=True, batch_size=_resolve_batch_size())
+                path, batch_size=_resolve_batch_size(), **transcribe_opts)
         else:
-            segments, info = m.transcribe(path, language=lang, word_timestamps=True, vad_filter=True)
-        words, texts = [], []
+            segments, info = m.transcribe(path, **transcribe_opts)
+        words, texts, seg_list = [], [], []
         for seg in segments:
-            texts.append(seg.text)
+            no_speech = float(getattr(seg, "no_speech_prob", 0.0) or 0.0)
+            avg_logprob = float(getattr(seg, "avg_logprob", 0.0) or 0.0)
+            compression = float(getattr(seg, "compression_ratio", 1.0) or 1.0)
+            if (no_speech > 0.6 and avg_logprob < -1.0) or no_speech > 0.8 or compression > 2.4:
+                continue
+
+            seg_text = (seg.text or "").strip()
+            if not seg_text:
+                continue
+
+            texts.append(seg_text)
+            seg_list.append({
+                "text": seg_text,
+                "start": seg.start,
+                "end": seg.end,
+                "no_speech_prob": no_speech,
+                "avg_logprob": avg_logprob,
+                "compression_ratio": compression,
+            })
             for w in (getattr(seg, "words", None) or []):
                 words.append({"word": w.word, "start": w.start, "end": w.end})
-        return {"text": " ".join(t.strip() for t in texts).strip(),
-                "words": words,
-                "language": getattr(info, "language", language)}
+        return {
+            "text": " ".join(texts).strip(),
+            "words": words,
+            "segments": seg_list,
+            "language": getattr(info, "language", language),
+        }
     finally:
         try:
             os.unlink(path)

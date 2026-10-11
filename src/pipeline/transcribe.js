@@ -1,5 +1,7 @@
 import { convertPcmToWav, isVoicedPcm, mergeSpeakerTracks, pcmDurationMs } from '../voice/audio.js';
 import { getSTT, resolveSttModel } from '../adapters/stt/index.js';
+import { isHallucination } from '../voice/hallucinations.js';
+import { dedup } from '../adapters/stt/openai-compatible.js';
 import { unlink, stat } from 'node:fs/promises';
 
 // Transcribes each track through a small worker pool instead of one at a
@@ -70,8 +72,8 @@ export async function transcribeTracks(rawTracks, cfg = {}, deps = {}) {
           signal: deps.signal,
           ...cfg,
         });
-        const clean = (text || '').trim();
-        if (!clean) continue; // silent track — not a failure, just nothing said
+        const clean = dedup((text || '').trim());
+        if (!clean || isHallucination(clean)) continue; // silent or hallucinated track
         let lastEnd = words && words.length
           ? words[words.length - 1].end
           : (typeof duration === 'number' && duration > 0 ? duration : 0);

@@ -28,6 +28,26 @@ test('transcribeTracks skips empty transcripts', async () => {
   assert.equal(failures.length, 0);
 });
 
+test('transcribeTracks discards hallucinated transcripts', async () => {
+  const tracks = [
+    { userId: 'u1', displayName: 'Alice', startMs: 0, pcmPath: '/a.pcm' },
+    { userId: 'u2', displayName: 'Bob', startMs: 1000, pcmPath: '/b.pcm' },
+  ];
+  const deps = {
+    convert: async (p, w) => w,
+    stt: async (w) => ({
+      text: w.includes('/a.') ? 'Thanks for watching!' : 'Valid speech from Bob',
+      words: [{ word: 'test', start: 0, end: 1 }],
+    }),
+    cleanup: () => {},
+  };
+  const { utterances, failures } = await transcribeTracks(tracks, {}, deps);
+  assert.equal(failures.length, 0);
+  assert.equal(utterances.length, 1);
+  assert.equal(utterances[0].displayName, 'Bob');
+  assert.equal(utterances[0].text, 'Valid speech from Bob');
+});
+
 test('transcribeTracks computes endMs from last word timestamp', async () => {
   const tracks = [{ userId: 'u1', displayName: 'Alice', startMs: 1000, pcmPath: '/a.pcm' }];
   const deps = { convert: async (p, w) => w, stt: async () => ({ text: 'hi there', words: [{ start: 0, end: 0.5 }, { start: 0.6, end: 2.0 }] }), cleanup: () => {} };

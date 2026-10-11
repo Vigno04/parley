@@ -74,7 +74,7 @@ export async function convertPcmToWav(pcmPath, wavPath) {
  */
 export async function isVoicedPcm(pcmPath, options = {}) {
   const frameSize = options.frameSize ?? 480; // 30ms at 16kHz mono s16le
-  const minVoicedFrames = options.minVoicedFrames ?? 4; // at least 120ms of voiced speech
+  const minVoicedFrames = options.minVoicedFrames ?? 3; // at least 90ms of sustained voiced speech
   const frameRmsThreshold = options.frameRmsThreshold ?? 0.008; // speech energy threshold
   const peakThreshold = options.peakThreshold ?? 0.025; // speech dynamic peak threshold
 
@@ -84,13 +84,11 @@ export async function isVoicedPcm(pcmPath, options = {}) {
   } catch {
     return false;
   }
-  if (!fileStat || fileStat.size < 320) return false;
+  if (!fileStat || fileStat.size < frameSize * minVoicedFrames * 2) return false;
 
   const buf = await readFile(pcmPath);
   const int16 = new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.length / 2));
-  if (int16.length < frameSize) return false;
-
-  const requiredVoicedFrames = Math.min(minVoicedFrames, Math.max(1, Math.floor(int16.length / frameSize)));
+  if (int16.length < frameSize * minVoicedFrames) return false;
 
   let voicedCount = 0;
   for (let i = 0; i <= int16.length - frameSize; i += frameSize) {
@@ -105,7 +103,7 @@ export async function isVoicedPcm(pcmPath, options = {}) {
     // Real voice speech has both energy (RMS) and dynamic contrast (peak)
     if (rms >= frameRmsThreshold && peak >= peakThreshold) {
       voicedCount++;
-      if (voicedCount >= requiredVoicedFrames) return true;
+      if (voicedCount >= minVoicedFrames) return true;
     }
   }
   return false;
