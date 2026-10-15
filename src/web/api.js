@@ -677,103 +677,181 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null, env: 
     res.json(q ? db.searchUtterances(req.params.g, q) : []);
   });
 
+  const memberCache = new Map(); // guildId -> { until: number, members: [] }
+
   async function collectGuildMembers(guild, guildId, fetchDiscord = false) {
+    const effectiveGuildId = guild?.id || guildId;
+    if (!effectiveGuildId) return [];
+
+    const now = Date.now();
+    const hit = memberCache.get(effectiveGuildId);
+    // Only use cached results if not explicitly refreshing and cache has more than basic initial entries
+    if (!fetchDiscord && hit && hit.until > now && hit.members?.length > 4) {
+      return hit.members;
+    }
+
     const memberMap = new Map();
+    const discoveredIds = new Set();
+
+    const addMember = (m) => {
+      if (!m || !m.id) return;
+      discoveredIds.add(m.id);
+      memberMap.set(m.id, {
+        id: m.id,
+        username: m.user?.username || m.username || m.id,
+        displayName: m.displayName || m.user?.globalName || m.user?.username || m.name || m.id,
+        isBot: !!(m.user?.bot || m.bot),
+      });
+    };
 
     if (guild) {
+      if (guild.ownerId) discoveredIds.add(guild.ownerId);
+
+      // 1. Cached members and bot client itself
+      if (guild.client?.user) addMember(guild.client.user);
+      for (const m of guild.members.cache.values()) addMember(m);
+
+      // 2. Active voice states
+      for (const vs of guild.voiceStates.cache.values()) {
+        if (vs.id) discoveredIds.add(vs.id);
+        if (vs.member) addMember(vs.member);
+      }
+
+      // 3. Channels: voice members & permission overwrites
+      for (const ch of guild.channels.cache.values()) {
+        if (ch.isVoiceBased?.() && ch.members) {
+          for (const m of ch.members.values()) addMember(m);
+        }
+        if (ch.permissionOverwrites?.cache) {
+          for (const [id, ow] of ch.permissionOverwrites.cache) {
+            if (ow.type === 1) discoveredIds.add(id);
+          }
+        }
+      }
+
+      // 4. Integrations (all bots: music bots, utility bots, etc.)
+      const integrationBots = [];
+      try {
+        const integrations = await guild.fetchIntegrations();
+        const items = integrations.values ? Array.from(integrations.values()) : (Array.isArray(integrations) ? integrations : []);
+        for (const i of items) {
+          const botId = i.application?.bot?.id || i.user?.id;
+          if (botId) {
+            discoveredIds.add(botId);
+            if (i.application?.bot) {
+              const botInfo = {
+                id: botId,
+                username: i.application.bot.username || i.name,
+                displayName: i.application.bot.username || i.name,
+                isBot: true,
+              };
+              integrationBots.push(botInfo);
+              memberMap.set(botId, botInfo);
+            }
+          }
+        }
+      } catch {}
+
+      // 5. Audit logs (users & bots who performed actions or had roles updated)
+      try {
+        const logs = await guild.fetchAuditLogs({ limit: 100 });
+        for (const entry of logs.entries.values()) {
+          if (entry.executor?.id) {
+            discoveredIds.add(entry.executor.id);
+          }
+          if (entry.target?.id && (entry.targetType === 'User' || entry.targetType === 'Member' || entry.target?.bot !== undefined || entry.target?.username)) {
+            discoveredIds.add(entry.target.id);
+          }
+        }
+      } catch {}
+
+      // 6. Recent text channel messages (finds active chatters and command callers)
+      try {
+        for (const ch of guild.channels.cache.values()) {
+          if (ch.isTextBased?.()) {
+            try {
+              const msgs = await ch.messages.fetch({ limit: 50 });
+              for (const msg of msgs.values()) {
+                if (msg.author?.id) {
+                  discoveredIds.add(msg.author.id);
+                }
+              }
+            } catch {}
+          }
+        }
+      } catch {}
+
+      // 7. Invites
+      try {
+        const invites = await guild.invites.fetch();
+        for (const inv of invites.values()) {
+          if (inv.inviter?.id) {
+            discoveredIds.add(inv.inviter.id);
+          }
+        }
+      } catch {}
+
+      // 8. Meeting attendees from DB
+      if (db && typeof db.sql?.prepare === 'function') {
+        try {
+          const rows = db.sql.prepare(`
+            SELECT DISTINCT a.user_id, a.display_name
+            FROM attendees a
+            JOIN meetings m ON m.id = a.meeting_id
+            WHERE m.guild_id = ?
+          `).all(effectiveGuildId);
+          for (const r of rows) {
+            if (r.user_id) discoveredIds.add(r.user_id);
+          }
+        } catch {}
+      }
+
+      // 9. Batch fetch GuildMember objects for all discovered IDs to get up-to-date nicknames & details
+      const idsToFetch = Array.from(discoveredIds);
+      if (idsToFetch.length > 0) {
+        try {
+          const batch = await guild.members.fetch({ user: idsToFetch });
+          if (batch && batch.size) {
+            for (const m of batch.values()) addMember(m);
+          }
+        } catch {
+          await Promise.allSettled(
+            idsToFetch.slice(0, 50).map(async (id) => {
+              try {
+                const m = await guild.members.fetch(id);
+                if (m) addMember(m);
+              } catch {}
+            })
+          );
+        }
+      }
+
+      // Re-apply integration bots to ensure bot status & names are preserved even if not cached in members
+      for (const ib of integrationBots) {
+        if (!memberMap.has(ib.id) || !memberMap.get(ib.id).isBot) {
+          memberMap.set(ib.id, ib);
+        }
+      }
+
+      // 10. If privileged Server Members intent is enabled on bot token, pull all members directly
       if (fetchDiscord) {
         try {
           await Promise.race([
             guild.members.fetch(),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500)),
           ]);
-        } catch {
-          // If GuildMembers gateway intent is missing or times out, proceed gracefully
-        }
-      }
-
-      for (const m of guild.members.cache.values()) {
-        memberMap.set(m.id, {
-          id: m.id,
-          username: m.user?.username || m.id,
-          displayName: m.displayName || m.user?.username || m.id,
-          isBot: !!m.user?.bot,
-        });
-      }
-
-      for (const ch of guild.channels.cache.values()) {
-        if (ch.isVoiceBased?.() && ch.members) {
-          for (const m of ch.members.values()) {
-            memberMap.set(m.id, {
-              id: m.id,
-              username: m.user?.username || m.id,
-              displayName: m.displayName || m.user?.username || m.id,
-              isBot: !!m.user?.bot,
-            });
-          }
-        }
-      }
-
-      for (const vs of guild.voiceStates.cache.values()) {
-        if (vs.member) {
-          const m = vs.member;
-          memberMap.set(m.id, {
-            id: m.id,
-            username: m.user?.username || m.id,
-            displayName: m.displayName || m.user?.username || m.id,
-            isBot: !!m.user?.bot,
-          });
-        }
+          for (const m of guild.members.cache.values()) addMember(m);
+        } catch {}
       }
     }
 
-    const effectiveGuildId = guild?.id || guildId;
-    if (effectiveGuildId && db && typeof db.sql?.prepare === 'function') {
-      try {
-        const rows = db.sql.prepare(`
-          SELECT DISTINCT a.user_id, a.display_name
-          FROM attendees a
-          JOIN meetings m ON m.id = a.meeting_id
-          WHERE m.guild_id = ?
-        `).all(effectiveGuildId);
-        for (const r of rows) {
-          if (!memberMap.has(r.user_id)) {
-            memberMap.set(r.user_id, {
-              id: r.user_id,
-              username: r.display_name || r.user_id,
-              displayName: r.display_name || r.user_id,
-              isBot: false,
-            });
-          }
-        }
-      } catch {}
-    }
-
-    if (guild && fetchDiscord && guild.client) {
-      const missingIds = Array.from(memberMap.keys()).filter((id) => !guild.members.cache.has(id));
-      if (missingIds.length > 0) {
-        await Promise.allSettled(
-          missingIds.slice(0, 50).map(async (id) => {
-            try {
-              const m = await guild.members.fetch(id);
-              if (m) {
-                memberMap.set(m.id, {
-                  id: m.id,
-                  username: m.user?.username || m.id,
-                  displayName: m.displayName || m.user?.username || m.id,
-                  isBot: !!m.user?.bot,
-                });
-              }
-            } catch {}
-          })
-        );
-      }
-    }
-
-    return Array.from(memberMap.values()).sort((a, b) => {
+    const result = Array.from(memberMap.values()).sort((a, b) => {
       if (a.isBot !== b.isBot) return a.isBot ? -1 : 1;
       return a.displayName.localeCompare(b.displayName);
     });
+
+    memberCache.set(effectiveGuildId, { until: now + 5 * 60 * 1000, members: result });
+    return result;
   }
 
   // ── Guild members (dedicated refresh endpoint) ─────────────────────────────
