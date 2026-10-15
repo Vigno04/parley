@@ -677,21 +677,120 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null, env: 
     res.json(q ? db.searchUtterances(req.params.g, q) : []);
   });
 
+  async function collectGuildMembers(guild, guildId, fetchDiscord = false) {
+    const memberMap = new Map();
+
+    if (guild) {
+      if (fetchDiscord) {
+        try {
+          await Promise.race([
+            guild.members.fetch(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
+          ]);
+        } catch {
+          // If GuildMembers gateway intent is missing or times out, proceed gracefully
+        }
+      }
+
+      for (const m of guild.members.cache.values()) {
+        memberMap.set(m.id, {
+          id: m.id,
+          username: m.user?.username || m.id,
+          displayName: m.displayName || m.user?.username || m.id,
+          isBot: !!m.user?.bot,
+        });
+      }
+
+      for (const ch of guild.channels.cache.values()) {
+        if (ch.isVoiceBased?.() && ch.members) {
+          for (const m of ch.members.values()) {
+            memberMap.set(m.id, {
+              id: m.id,
+              username: m.user?.username || m.id,
+              displayName: m.displayName || m.user?.username || m.id,
+              isBot: !!m.user?.bot,
+            });
+          }
+        }
+      }
+
+      for (const vs of guild.voiceStates.cache.values()) {
+        if (vs.member) {
+          const m = vs.member;
+          memberMap.set(m.id, {
+            id: m.id,
+            username: m.user?.username || m.id,
+            displayName: m.displayName || m.user?.username || m.id,
+            isBot: !!m.user?.bot,
+          });
+        }
+      }
+    }
+
+    const effectiveGuildId = guild?.id || guildId;
+    if (effectiveGuildId && db && typeof db.sql?.prepare === 'function') {
+      try {
+        const rows = db.sql.prepare(`
+          SELECT DISTINCT a.user_id, a.display_name
+          FROM attendees a
+          JOIN meetings m ON m.id = a.meeting_id
+          WHERE m.guild_id = ?
+        `).all(effectiveGuildId);
+        for (const r of rows) {
+          if (!memberMap.has(r.user_id)) {
+            memberMap.set(r.user_id, {
+              id: r.user_id,
+              username: r.display_name || r.user_id,
+              displayName: r.display_name || r.user_id,
+              isBot: false,
+            });
+          }
+        }
+      } catch {}
+    }
+
+    if (guild && fetchDiscord && guild.client) {
+      const missingIds = Array.from(memberMap.keys()).filter((id) => !guild.members.cache.has(id));
+      if (missingIds.length > 0) {
+        await Promise.allSettled(
+          missingIds.slice(0, 50).map(async (id) => {
+            try {
+              const m = await guild.members.fetch(id);
+              if (m) {
+                memberMap.set(m.id, {
+                  id: m.id,
+                  username: m.user?.username || m.id,
+                  displayName: m.displayName || m.user?.username || m.id,
+                  isBot: !!m.user?.bot,
+                });
+              }
+            } catch {}
+          })
+        );
+      }
+    }
+
+    return Array.from(memberMap.values()).sort((a, b) => {
+      if (a.isBot !== b.isBot) return a.isBot ? -1 : 1;
+      return a.displayName.localeCompare(b.displayName);
+    });
+  }
+
+  // ── Guild members (dedicated refresh endpoint) ─────────────────────────────
+  r.get('/guilds/:g/members', async (req, res) => {
+    const guild = liveClient()?.guilds?.cache?.get(req.params.g);
+    const members = await collectGuildMembers(guild, req.params.g, req.query.refresh === '1');
+    res.json({ members });
+  });
+
   // ── Guild config ───────────────────────────────────────────────────────────
-  r.get('/guilds/:g/config', (req, res) => {
+  r.get('/guilds/:g/config', async (req, res) => {
     const guild = liveClient()?.guilds?.cache?.get(req.params.g);
     const channels = guild
       ? [...guild.channels.cache.filter((c) => c.type === ChannelType.GuildText).values()]
           .map((c) => ({ id: c.id, name: c.name }))
       : [];
-    const members = guild
-      ? [...guild.members.cache.values()].map((m) => ({
-          id: m.id,
-          username: m.user?.username || m.id,
-          displayName: m.displayName || m.user?.username || m.id,
-          isBot: !!m.user?.bot,
-        }))
-      : [];
+    const members = await collectGuildMembers(guild, req.params.g, req.query.refresh === '1');
     const provs = availableProviders(db);
     const secrets = {};
     for (const p of provs) {
@@ -699,7 +798,7 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null, env: 
     }
     res.json({
       config: getGuildConfig(db, req.params.g),
-defaultSummaryPrompt: SUMMARY_PROMPT,
+      defaultSummaryPrompt: SUMMARY_PROMPT,
       providers: provs,
       sttProviders: availableSttProviders(db, env),
       channels,

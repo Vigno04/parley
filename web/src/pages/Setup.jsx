@@ -65,8 +65,9 @@ function parseInitialModels(raw) {
         caps: isWhisper ? ['stt'] : isLlm ? ['llm_stt', 'summarizer'] : ['summarizer', 'stt'],
       };
     }
+    const modelId = typeof item.id === 'string' ? item.id : (item.id?.id || item.id?.name || item.name || '');
     return {
-      id: item.id || item.name,
+      id: modelId,
       caps: Array.isArray(item.caps) ? item.caps : ['stt', 'summarizer'],
     };
   });

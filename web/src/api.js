@@ -66,6 +66,7 @@ export const api = {
   sttProviders: () => fetch('/api/stt-providers').then(json),
   commands: () => fetch('/api/commands').then(json),
   config: (g) => fetch(`/api/guilds/${g}/config`).then(json),
+  guildMembers: (g, refresh = false) => fetch(`/api/guilds/${g}/members${refresh ? '?refresh=1' : ''}`).then(json),
   saveConfig: (g, patch) => fetch(`/api/guilds/${g}/config`, jsonBody('PATCH', patch)).then(json),
   providers: () => fetch('/api/providers').then(json),
   createProvider: (payload) => fetch('/api/providers', jsonBody('POST', payload)).then(json),

@@ -103,10 +103,10 @@ function ProviderModelRow({ providerValue, modelValue, providerOptions, label, p
       {providerValue && (
         <Field label="Model" hint={modelHint}>
           <ModelPicker
-            value={modelValue || ''}
+            value={typeof modelValue === 'object' && modelValue !== null ? (modelValue.id || '') : (modelValue || '')}
             catalog={catalog}
             loading={loadingCatalog}
-            onPick={(m) => onSave({ model: m })}
+            onPick={(m) => onSave({ model: typeof m === 'object' && m !== null ? (m.id || '') : m })}
             onRefresh={() => fetchCatalog(providerValue, true)}
           />
         </Field>
@@ -319,9 +319,10 @@ export default function ServerSettings() {
                   onChange={(e) => save({ whisperModel: e.target.value })}
                   className="input appearance-none pr-9 cursor-pointer"
                 >
-                  {whisperModels.map((m) => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
+                  {whisperModels.map((m) => {
+                    const mid = typeof m === 'string' ? m : (m?.id || m?.name || '');
+                    return <option key={mid} value={mid}>{mid}</option>;
+                  })}
                 </select>
                 <Chevron />
               </div>
@@ -338,9 +339,10 @@ export default function ServerSettings() {
                     className="input appearance-none pr-9 cursor-pointer"
                   >
                     <option value="">— Provider default —</option>
-                    {sttModels.map((m) => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
+                    {sttModels.map((m) => {
+                      const mid = typeof m === 'string' ? m : (m?.id || m?.name || '');
+                      return <option key={mid} value={mid}>{mid}</option>;
+                    })}
                   </select>
                   <Chevron />
                 </div>
@@ -549,6 +551,7 @@ export default function ServerSettings() {
 
         {/* 4. User & Bot Blacklist */}
         <BlacklistCard
+          guildId={guildId}
           blacklist={c?.userBlacklist || []}
           members={members}
           onSave={save}
@@ -558,9 +561,38 @@ export default function ServerSettings() {
   );
 }
 
-function BlacklistCard({ blacklist = [], members = [], onSave }) {
+function BlacklistCard({ guildId, blacklist = [], members = [], onSave }) {
   const [inputVal, setInputVal] = useState('');
   const [selectedMember, setSelectedMember] = useState('');
+  const [memberList, setMemberList] = useState(members);
+  const [loadingMembers, setLoadingMembers] = useState(false);
+  const [hasPulled, setHasPulled] = useState(false);
+
+  useEffect(() => {
+    setMemberList(members);
+  }, [members]);
+
+  const refreshMembers = async () => {
+    if (!guildId || loadingMembers) return;
+    setLoadingMembers(true);
+    try {
+      const res = await api.guildMembers(guildId, true);
+      if (res?.members) {
+        setMemberList(res.members);
+      }
+    } catch (e) {
+      console.error('Failed to fetch members:', e);
+    } finally {
+      setLoadingMembers(false);
+      setHasPulled(true);
+    }
+  };
+
+  const handleDropdownOpen = () => {
+    if (!hasPulled && !loadingMembers) {
+      refreshMembers();
+    }
+  };
 
   const currentList = Array.isArray(blacklist) ? blacklist : [];
 
@@ -592,18 +624,24 @@ function BlacklistCard({ blacklist = [], members = [], onSave }) {
         </p>
 
         <div className="flex flex-col sm:flex-row gap-2">
-          {members.length > 0 && (
+          <div className="relative flex-1 flex items-center gap-1.5">
             <div className="relative flex-1">
               <select
                 value={selectedMember}
+                onFocus={handleDropdownOpen}
+                onClick={handleDropdownOpen}
                 onChange={(e) => {
                   setSelectedMember(e.target.value);
                   if (e.target.value) handleAdd(e.target.value);
                 }}
-                className="input appearance-none pr-9 cursor-pointer text-sm"
+                className="input appearance-none pr-9 cursor-pointer text-sm w-full"
               >
-                <option value="">— Pick server member / bot to blacklist —</option>
-                {members.map((m) => (
+                <option value="">
+                  {loadingMembers
+                    ? '— Pulling members from Discord… —'
+                    : (memberList.length > 0 ? '— Pick server member / bot to blacklist —' : '— No members found (click ↻ to pull) —')}
+                </option>
+                {memberList.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.isBot ? '🤖 ' : '👤 '} {m.displayName} (@{m.username})
                   </option>
@@ -611,7 +649,17 @@ function BlacklistCard({ blacklist = [], members = [], onSave }) {
               </select>
               <Chevron />
             </div>
-          )}
+            <button
+              type="button"
+              onClick={refreshMembers}
+              disabled={loadingMembers}
+              title="Pull / refresh members from Discord"
+              aria-label="Pull / refresh members from Discord"
+              className="btn btn-secondary !py-2 px-2.5 shrink-0 flex items-center justify-center text-muted hover:text-ink transition-colors"
+            >
+              <Icon.Refresh width={14} height={14} className={loadingMembers ? 'animate-spin text-accent' : ''} />
+            </button>
+          </div>
           <div className="flex gap-2 flex-1">
             <input
               type="text"
@@ -640,7 +688,7 @@ function BlacklistCard({ blacklist = [], members = [], onSave }) {
         {currentList.length > 0 ? (
           <div className="flex flex-wrap gap-2 pt-1">
             {currentList.map((entry) => {
-              const matched = members.find(
+              const matched = memberList.find(
                 (m) => m.id === entry || m.username.toLowerCase() === entry.toLowerCase()
               );
               return (

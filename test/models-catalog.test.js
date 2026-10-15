@@ -253,3 +253,24 @@ test('custom provider with failed live fetch does not fall back to standard prov
   assert.deepEqual(cat.models, []);
   assert.equal(cat.source, 'empty');
 });
+
+test('custom provider with object-formatted {id, caps} models returns string ids and filters summarizer caps', async () => {
+  const provider = {
+    id: 'ai',
+    kind: 'openai-compatible',
+    base_url: 'http://localhost:8000',
+    models: JSON.stringify([
+      { id: 'anti-api/claude-sonnet-5-5', caps: ['summarizer'] },
+      { id: 'llama-cpp/gemma-4-e2b', caps: ['llm_stt', 'summarizer'] },
+      { id: 'llama-cpp/whisper', caps: ['stt'] },
+    ]),
+  };
+  const fetchImpl = async () => { throw new Error('endpoint down'); };
+  const cat = await listModels(provider, { fetchImpl });
+  assert.deepEqual(cat.models.map((m) => m.id), ['anti-api/claude-sonnet-5-5', 'llama-cpp/gemma-4-e2b']);
+  assert.equal(typeof cat.models[0].id, 'string');
+  assert.equal(typeof cat.models[0].label, 'string');
+  assert.equal(cat.default, 'anti-api/claude-sonnet-5-5');
+  assert.equal(searchModels(cat.models, 'gemma').length, 1);
+});
+

@@ -67,7 +67,8 @@ export function validateSetup(input, dbOrEnv) {
     }
     patch.summarizerProvider = input.provider;
     if (input.model !== undefined) {
-      patch.summarizerModel = input.model || null;
+      const rawModel = typeof input.model === 'object' && input.model !== null ? (input.model.id || input.model.name) : input.model;
+      patch.summarizerModel = rawModel ? String(rawModel).trim() : null;
     }
   }
 
@@ -91,10 +92,12 @@ export function validateSetup(input, dbOrEnv) {
         }
       }
       patch.summarizerFallbackProvider = fb;
-      patch.summarizerFallbackModel = input.fallbackModel || DEFAULT_MODELS[fb] || null;
+      const rawFb = typeof input.fallbackModel === 'object' && input.fallbackModel !== null ? (input.fallbackModel.id || input.fallbackModel.name) : input.fallbackModel;
+      patch.summarizerFallbackModel = (rawFb ? String(rawFb).trim() : null) || DEFAULT_MODELS[fb] || null;
     }
   } else if (input.fallbackModel !== undefined) {
-    patch.summarizerFallbackModel = input.fallbackModel || null;
+    const rawFb = typeof input.fallbackModel === 'object' && input.fallbackModel !== null ? (input.fallbackModel.id || input.fallbackModel.name) : input.fallbackModel;
+    patch.summarizerFallbackModel = rawFb ? String(rawFb).trim() : null;
   }
 
   if (input.whisperModel !== undefined) {

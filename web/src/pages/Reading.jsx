@@ -436,9 +436,10 @@ function RetranscribeModal({ meeting, sttProviders = [], onClose, onDone }) {
                   disabled={busy}
                   className="input appearance-none pr-9 cursor-pointer"
                 >
-                  {whisperModels.map((m) => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
+                  {whisperModels.map((m) => {
+                    const mid = typeof m === 'string' ? m : (m?.id || m?.name || '');
+                    return <option key={mid} value={mid}>{mid}</option>;
+                  })}
                 </select>
                 <Icon.Chevron width={14} height={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rotate-90 text-muted" />
               </div>
@@ -456,9 +457,10 @@ function RetranscribeModal({ meeting, sttProviders = [], onClose, onDone }) {
                     className="input appearance-none pr-9 cursor-pointer"
                   >
                     <option value="">— Provider default —</option>
-                    {cloudModels.map((m) => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
+                    {cloudModels.map((m) => {
+                      const mid = typeof m === 'string' ? m : (m?.id || m?.name || '');
+                      return <option key={mid} value={mid}>{mid}</option>;
+                    })}
                   </select>
                   <Icon.Chevron width={14} height={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rotate-90 text-muted" />
                 </div>

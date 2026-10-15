@@ -24,8 +24,9 @@ function rank(models, query) {
   const tokens = q.split(/\s+/);
   const hits = [];
   models.forEach((m, i) => {
-    const id = m.id.toLowerCase();
-    const hay = `${id} ${(m.label || '').toLowerCase()}`;
+    const id = (typeof m.id === 'string' ? m.id : (m.id?.id || m.id?.name || String(m.id || ''))).toLowerCase();
+    const labelStr = typeof m.label === 'string' ? m.label : (m.label?.name || m.label?.id || id);
+    const hay = `${id} ${labelStr.toLowerCase()}`;
     if (!tokens.every((t) => hay.includes(t))) return;
     hits.push({ m, i, score: id === q ? 0 : id.startsWith(q) ? 1 : id.includes(q) ? 2 : 3 });
   });
@@ -34,7 +35,24 @@ function rank(models, query) {
 }
 
 export function ModelPicker({ value, catalog, loading = false, onPick, onRefresh }) {
-  const models = catalog?.models || [];
+  const rawModels = catalog?.models || [];
+  const models = useMemo(() => {
+    return (Array.isArray(rawModels) ? rawModels : []).map((m) => {
+      if (!m) return null;
+      if (typeof m === 'string') return { id: m, label: m, context: null };
+      const id = typeof m.id === 'string'
+        ? m.id
+        : (typeof m.id === 'object' && m.id ? (m.id.id || m.id.name || '') : (m.name || ''));
+      const label = typeof m.label === 'string'
+        ? m.label
+        : (typeof m.label === 'object' && m.label ? (m.label.label || m.label.name || m.label.id || id) : id);
+      return {
+        id: String(id || '').trim(),
+        label: String(label || id || '').trim(),
+        context: Number.isFinite(m.context) ? m.context : null,
+      };
+    }).filter((m) => m && m.id);
+  }, [rawModels]);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
@@ -42,6 +60,8 @@ export function ModelPicker({ value, catalog, loading = false, onPick, onRefresh
   const listRef = useRef(null);
   const inputRef = useRef(null);
   const id = useRef(`mp-${Math.random().toString(36).slice(2)}`).current;
+
+  const displayVal = typeof value === 'object' && value !== null ? (value.id || '') : (value || '');
 
   const results = useMemo(() => rank(models, query), [models, query]);
   const shown = results.slice(0, MAX_ROWS);
@@ -65,9 +85,10 @@ export function ModelPicker({ value, catalog, loading = false, onPick, onRefresh
 
   function close() { setOpen(false); setQuery(''); }
   function commit(raw) {
-    const v = String(raw || '').trim();
+    const rawVal = typeof raw === 'object' && raw !== null ? (raw.id || raw.name) : raw;
+    const v = String(rawVal || '').trim();
     close();
-    if (v && v !== value) onPick(v);
+    if (v && v !== displayVal) onPick(v);
   }
 
   function onKeyDown(e) {
@@ -81,7 +102,7 @@ export function ModelPicker({ value, catalog, loading = false, onPick, onRefresh
     if (e.key === 'Enter') {
       e.preventDefault();
       if (open && shown[active]) commit(shown[active].id);
-      else commit(query || value);
+      else commit(query || displayVal);
       return;
     }
     if (e.key === 'Escape') { e.preventDefault(); close(); inputRef.current?.blur(); return; }
@@ -104,8 +125,8 @@ export function ModelPicker({ value, catalog, loading = false, onPick, onRefresh
           aria-controls={id}
           aria-autocomplete="list"
           aria-activedescendant={open && shown[active] ? `${id}-${active}` : undefined}
-          value={open ? query : (value || '')}
-          placeholder={open ? 'Search models…' : (value || 'Pick a model…')}
+          value={open ? query : displayVal}
+          placeholder={open ? 'Search models…' : (displayVal || 'Pick a model…')}
           onFocus={() => setOpen(true)}
           onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
           onKeyDown={onKeyDown}

@@ -71,7 +71,11 @@ async function getJson(url, { headers = {}, timeoutMs, fetchImpl }) {
   }
 }
 
-const entry = (id, label, context) => ({ id, label: label || id, context: Number.isFinite(context) ? context : null });
+const entry = (id, label, context) => {
+  const modelId = typeof id === 'string' ? id : (id?.id || id?.name || String(id || ''));
+  const modelLabel = typeof label === 'string' ? label : (label?.name || label?.id || modelId);
+  return { id: modelId, label: modelLabel || modelId, context: Number.isFinite(context) ? context : null };
+};
 
 async function fetchGemini({ apiKey, fetchImpl, timeoutMs }) {
   if (!apiKey) throw new Error('GEMINI_API_KEY is not set');
@@ -246,17 +250,32 @@ export async function listModels(provider, {
 
   let configuredModels = [];
   if (provider && typeof provider === 'object' && provider.models) {
+    let rawList = [];
     if (Array.isArray(provider.models)) {
-      configuredModels = provider.models.filter(Boolean);
+      rawList = provider.models.filter(Boolean);
     } else if (typeof provider.models === 'string') {
       try {
         const parsed = JSON.parse(provider.models);
-        if (Array.isArray(parsed)) configuredModels = parsed.filter(Boolean);
-        else if (provider.models.trim()) configuredModels = [provider.models.trim()];
+        if (Array.isArray(parsed)) rawList = parsed.filter(Boolean);
+        else if (provider.models.trim()) rawList = [provider.models.trim()];
       } catch {
-        configuredModels = provider.models.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
+        rawList = provider.models.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
       }
     }
+    configuredModels = rawList
+      .filter((m) => {
+        if (!m) return false;
+        if (typeof m === 'object' && Array.isArray(m.caps)) {
+          return m.caps.includes('summarizer') || m.caps.length === 0;
+        }
+        return true;
+      })
+      .map((m) => {
+        if (typeof m === 'string') return m.trim();
+        const id = m?.id || m?.name;
+        return typeof id === 'string' ? id.trim() : '';
+      })
+      .filter(Boolean);
   }
 
   // Only use hardcoded CURATED_MODELS for default standard providers without custom endpoints
@@ -336,7 +355,7 @@ export function searchModels(models, query = '', limit = 25) {
   const scored = [];
   for (let i = 0; i < models.length; i += 1) {
     const m = models[i];
-    const id = m.id.toLowerCase();
+    const id = (typeof m.id === 'string' ? m.id : (m.id?.id || m.id?.name || String(m.id || ''))).toLowerCase();
     const hay = `${id} ${String(m.label || '').toLowerCase()}`;
     if (!tokens.every((t) => hay.includes(t))) continue;
     const score = id === q ? 0 : id.startsWith(q) ? 1 : id.includes(q) ? 2 : 3;
