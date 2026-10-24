@@ -395,6 +395,9 @@ export default function ServerSettings() {
       />
 
       <div className="space-y-5">
+        {/* Display Name Overrides */}
+        <DisplayNameManager guildId={guildId} members={members} />
+
         {/* 1. Speech-to-Text (STT) Settings First */}
         <Card title="Speech-to-Text (STT)" desc="Transcription engine that converts voice recordings into text.">
           <Field label="STT provider" hint="The sidecar runs locally via faster-whisper; cloud providers send audio to a remote API.">
