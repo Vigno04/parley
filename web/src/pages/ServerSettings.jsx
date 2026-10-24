@@ -170,17 +170,22 @@ function PromptEditor({ value, defaultValue, onSave }) {
   );
 }
 
-function DisplayNameManager({ guildId, members }) {
+function DisplayNameManager({ guildId, members = [] }) {
   const [displayNames, setDisplayNames] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [draftName, setDraftName] = useState('');
+  const [search, setSearch] = useState('');
+  const [manualId, setManualId] = useState('');
+  const [manualName, setManualName] = useState('');
+  const [showAddManual, setShowAddManual] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     async function load() {
       try {
         const names = await api.displayNames.list(guildId);
-        setDisplayNames(names);
+        setDisplayNames(names || []);
       } catch (e) {
         console.error('Failed to load display names:', e);
       } finally {
@@ -191,84 +196,230 @@ function DisplayNameManager({ guildId, members }) {
   }, [guildId]);
 
   async function saveName(userId, displayName) {
+    if (!userId) return;
+    setSaving(true);
     try {
-      const updated = await api.displayNames.set(guildId, userId, displayName);
-      setDisplayNames(updated);
+      const updated = await api.displayNames.set(guildId, userId, displayName?.trim() || null);
+      setDisplayNames(updated || []);
       setEditing(null);
+      setDraftName('');
     } catch (e) {
       console.error('Failed to save display name:', e);
+    } finally {
+      setSaving(false);
     }
   }
+
+  async function handleAddManual(e) {
+    e.preventDefault();
+    const uid = manualId.trim();
+    const name = manualName.trim();
+    if (!uid || !name) return;
+    await saveName(uid, name);
+    setManualId('');
+    setManualName('');
+    setShowAddManual(false);
+  }
+
+  // Combine discovered members + anyone with an existing override
+  const allUsersMap = new Map();
+  for (const m of (members || [])) {
+    if (m?.id) {
+      allUsersMap.set(m.id, {
+        id: m.id,
+        displayName: m.displayName || m.username || m.id,
+        isBot: !!m.isBot,
+      });
+    }
+  }
+  for (const d of displayNames) {
+    if (d?.user_id && !allUsersMap.has(d.user_id)) {
+      allUsersMap.set(d.user_id, {
+        id: d.user_id,
+        displayName: d.display_name || d.user_id,
+        isBot: false,
+      });
+    }
+  }
+
+  const allUsers = Array.from(allUsersMap.values()).sort((a, b) => {
+    const aHas = displayNames.some((d) => d.user_id === a.id);
+    const bHas = displayNames.some((d) => d.user_id === b.id);
+    if (aHas !== bHas) return aHas ? -1 : 1; // Prioritize users with overrides
+    return (a.displayName || '').localeCompare(b.displayName || '');
+  });
+
+  const filteredUsers = allUsers.filter((u) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    const custom = displayNames.find((d) => d.user_id === u.id)?.display_name || '';
+    return u.displayName.toLowerCase().includes(q) || u.id.toLowerCase().includes(q) || custom.toLowerCase().includes(q);
+  });
 
   if (loading) return <div className="h-44 skeleton rounded-[14px]" />;
 
   return (
-    <Card title="Display Name Overrides" desc="Customize how members appear in transcripts and summaries">
-      <div className="space-y-3">
-        {members.map((m) => {
-          const current = displayNames.find((d) => d.user_id === m.id);
-          const isEditing = editing === m.id;
-          return (
-            <div key={m.id} className="flex items-center gap-3">
-              <div className="flex-1">
-                <p className="text-sm font-medium text-ink">{m.displayName}</p>
-                {current ? (
-                  <p className="text-xs text-muted">Currently: {current.display_name}</p>
-                ) : (
-                  <p className="text-xs text-muted">No custom name set</p>
-                )}
-              </div>
-              {isEditing ? (
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={draftName}
-                    onChange={(e) => setDraftName(e.target.value)}
-                    placeholder="Enter custom name"
-                    className="input !py-1.5"
-                  />
-                  <button
-                    type="button"
-                    className="btn btn-primary !py-1.5"
-                    onClick={() => saveName(m.id, draftName)}
-                  >
-                    Save
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-ghost !py-1.5"
-                    onClick={() => setEditing(null)}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              ) : (
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    className="btn btn-ghost !py-1.5"
-                    onClick={() => {
-                      setEditing(m.id);
-                      setDraftName(current?.display_name || '');
-                    }}
-                  >
-                    {current ? 'Edit' : 'Set'}
-                  </button>
-                  {current && (
-                    <button
-                      type="button"
-                      className="btn btn-ghost !py-1.5 text-error"
-                      onClick={() => saveName(m.id, null)}
-                    >
-                      Remove
-                    </button>
+    <Card
+      title="Member Name Overrides (D&D Characters)"
+      desc="Map member Discord accounts to custom names (e.g. character names). Transcripts, summaries, and exports will use these names."
+      badge={
+        displayNames.length > 0 ? (
+          <span className="text-[11px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-semibold">
+            {displayNames.length} {displayNames.length === 1 ? 'override' : 'overrides'}
+          </span>
+        ) : null
+      }
+      extra={
+        <button
+          type="button"
+          onClick={() => setShowAddManual(!showAddManual)}
+          className="btn btn-ghost text-xs !py-1"
+        >
+          {showAddManual ? 'Cancel' : '+ Add by User ID'}
+        </button>
+      }
+    >
+      {showAddManual && (
+        <form onSubmit={handleAddManual} className="p-3 bg-surface-2 rounded-lg border border-border space-y-3 mb-3">
+          <p className="text-xs font-semibold text-ink">Add override by Discord User ID</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <input
+              type="text"
+              placeholder="Discord User ID (e.g. 123456789...)"
+              value={manualId}
+              onChange={(e) => setManualId(e.target.value)}
+              className="input !py-1.5 text-xs font-mono"
+              required
+            />
+            <input
+              type="text"
+              placeholder="Character / Custom Name"
+              value={manualName}
+              onChange={(e) => setManualName(e.target.value)}
+              className="input !py-1.5 text-xs"
+              required
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setShowAddManual(false)}
+              className="btn btn-ghost !py-1 text-xs"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving || !manualId.trim() || !manualName.trim()}
+              className="btn btn-primary !py-1 text-xs"
+            >
+              Add Override
+            </button>
+          </div>
+        </form>
+      )}
+
+      {allUsers.length > 6 && (
+        <div className="mb-3">
+          <input
+            type="search"
+            placeholder="Search members or character names..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="input !py-1.5 text-xs"
+          />
+        </div>
+      )}
+
+      {filteredUsers.length === 0 ? (
+        <p className="text-xs text-muted py-2">
+          {search ? 'No members match your search.' : 'No members discovered yet. Click "+ Add by User ID" to add a custom name.'}
+        </p>
+      ) : (
+        <div className="divide-y divide-border/60 max-h-96 overflow-y-auto pr-1">
+          {filteredUsers.map((m) => {
+            const current = displayNames.find((d) => d.user_id === m.id);
+            const isEditing = editing === m.id;
+            return (
+              <div key={m.id} className="py-2.5 flex items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-ink truncate">{m.displayName}</span>
+                    {m.isBot && (
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-surface-3 text-muted uppercase font-bold">
+                        BOT
+                      </span>
+                    )}
+                  </div>
+                  {current ? (
+                    <div className="flex items-center gap-1.5 mt-0.5 text-xs text-primary font-medium">
+                      <span>↳ Character:</span>
+                      <span className="font-bold underline decoration-primary/40">{current.display_name}</span>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-muted font-mono mt-0.5 truncate">ID: {m.id}</p>
                   )}
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+
+                {isEditing ? (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <input
+                      type="text"
+                      value={draftName}
+                      onChange={(e) => setDraftName(e.target.value)}
+                      placeholder="Character name"
+                      className="input !py-1 text-xs w-36 sm:w-44"
+                      autoFocus
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') saveName(m.id, draftName);
+                        if (e.key === 'Escape') setEditing(null);
+                      }}
+                    />
+                    <button
+                      type="button"
+                      disabled={saving || !draftName.trim()}
+                      className="btn btn-primary !py-1 text-xs"
+                      onClick={() => saveName(m.id, draftName)}
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost !py-1 text-xs"
+                      onClick={() => setEditing(null)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      className="btn btn-ghost !py-1 text-xs"
+                      onClick={() => {
+                        setEditing(m.id);
+                        setDraftName(current?.display_name || '');
+                      }}
+                    >
+                      {current ? 'Change' : 'Set Name'}
+                    </button>
+                    {current && (
+                      <button
+                        type="button"
+                        title="Remove custom name override"
+                        className="btn btn-ghost !py-1 text-xs text-error hover:bg-error/10"
+                        onClick={() => saveName(m.id, null)}
+                      >
+                        Reset
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </Card>
   );
 }

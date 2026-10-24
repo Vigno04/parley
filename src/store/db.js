@@ -263,7 +263,15 @@ export function openDb(path) {
         .run(meetingId, userId, displayName);
     },
     listAttendees(meetingId) {
-      return sql.prepare(`SELECT * FROM attendees WHERE meeting_id = ?`).all(meetingId);
+      return sql.prepare(
+        `SELECT a.meeting_id, a.user_id,
+                COALESCE(udn.display_name, a.display_name) AS display_name,
+                a.display_name AS original_display_name
+         FROM attendees a
+         LEFT JOIN meetings m ON m.id = a.meeting_id
+         LEFT JOIN user_display_names udn ON udn.guild_id = m.guild_id AND udn.user_id = a.user_id
+         WHERE a.meeting_id = ?`
+      ).all(meetingId);
     },
     addUtterance({ meetingId, userId, displayName, startMs, endMs, text }) {
       sql.prepare(`INSERT INTO utterances (meeting_id, user_id, display_name, start_ms, end_ms, text)
@@ -293,15 +301,29 @@ export function openDb(path) {
       }
     },
     listUtterances(meetingId) {
-      return sql.prepare(`SELECT * FROM utterances WHERE meeting_id = ? ORDER BY start_ms`).all(meetingId);
+      return sql.prepare(
+        `SELECT u.id, u.meeting_id, u.user_id,
+                COALESCE(udn.display_name, u.display_name) AS display_name,
+                u.display_name AS original_display_name,
+                u.start_ms, u.end_ms, u.text
+         FROM utterances u
+         LEFT JOIN meetings m ON m.id = u.meeting_id
+         LEFT JOIN user_display_names udn ON udn.guild_id = m.guild_id AND udn.user_id = u.user_id
+         WHERE u.meeting_id = ? ORDER BY u.start_ms`
+      ).all(meetingId);
     },
     searchUtterances(guildId, keyword) {
       // Bind user input as a quoted FTS5 phrase literal so operator chars never throw.
       const safe = `"${String(keyword).replace(/"/g, '""')}"`;
       return sql.prepare(
-        `SELECT u.* FROM utterances_fts f
+        `SELECT u.id, u.meeting_id, u.user_id,
+                COALESCE(udn.display_name, u.display_name) AS display_name,
+                u.display_name AS original_display_name,
+                u.start_ms, u.end_ms, u.text
+         FROM utterances_fts f
          JOIN utterances u ON u.id = f.rowid
          JOIN meetings m ON m.id = u.meeting_id
+         LEFT JOIN user_display_names udn ON udn.guild_id = m.guild_id AND udn.user_id = u.user_id
          WHERE m.guild_id = ? AND utterances_fts MATCH ?
          ORDER BY u.meeting_id DESC LIMIT 50`
       ).all(guildId, safe);
@@ -455,7 +477,11 @@ export function openDb(path) {
         } } catch { /* keep defaults */ }
         try { if (talktime_json) talktime = JSON.parse(talktime_json) || []; } catch { /* [] */ }
         const attendee_names = sql.prepare(
-          `SELECT display_name FROM attendees WHERE meeting_id = ? ORDER BY display_name`
+          `SELECT COALESCE(udn.display_name, a.display_name) AS display_name
+           FROM attendees a
+           LEFT JOIN meetings m ON m.id = a.meeting_id
+           LEFT JOIN user_display_names udn ON udn.guild_id = m.guild_id AND udn.user_id = a.user_id
+           WHERE a.meeting_id = ? ORDER BY display_name`
         ).all(m.id).map((a) => a.display_name);
         return { ...m, tldr, topic_count, decision_count, talktime, attendee_names,
           has_summary: notes_json != null,

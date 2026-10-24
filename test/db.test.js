@@ -120,3 +120,42 @@ test('getSummary does not leak raw json columns', () => {
   assert.equal('talktime_json' in s, false);
   assert.equal(s.notes.tldr, 'hi');
 });
+
+test('user_display_names overrides member names across old and new meetings in listUtterances, listAttendees, and search', () => {
+  const db = freshDb();
+  const id = db.createMeeting({ guildId: 'guild-1', channelId: 'c', channelName: 'DND Session', startedAt: '2026-10-24' });
+  db.addAttendee(id, 'user-1', 'AliceDiscord');
+  db.addAttendee(id, 'user-2', 'BobDiscord');
+  db.addUtterance({ meetingId: id, userId: 'user-1', displayName: 'AliceDiscord', startMs: 0, endMs: 1000, text: 'I cast fireball!' });
+  db.addUtterance({ meetingId: id, userId: 'user-2', displayName: 'BobDiscord', startMs: 1000, endMs: 2000, text: 'Roll for damage.' });
+
+  // Initially, names reflect what was originally recorded
+  let utts = db.listUtterances(id);
+  assert.equal(utts[0].display_name, 'AliceDiscord');
+  let atts = db.listAttendees(id);
+  assert.equal(atts.find((a) => a.user_id === 'user-1').display_name, 'AliceDiscord');
+
+  // Now set custom character name override
+  db.setCustomDisplayName('guild-1', 'user-1', 'Thorgar the Wizard');
+  assert.equal(db.getCustomDisplayName('guild-1', 'user-1'), 'Thorgar the Wizard');
+
+  // Both old and new queries automatically resolve to the character name
+  utts = db.listUtterances(id);
+  assert.equal(utts[0].display_name, 'Thorgar the Wizard');
+  assert.equal(utts[0].original_display_name, 'AliceDiscord');
+  assert.equal(utts[1].display_name, 'BobDiscord');
+
+  atts = db.listAttendees(id);
+  assert.equal(atts.find((a) => a.user_id === 'user-1').display_name, 'Thorgar the Wizard');
+  assert.equal(atts.find((a) => a.user_id === 'user-2').display_name, 'BobDiscord');
+
+  // Search results also resolve with overridden name
+  const searched = db.searchUtterances('guild-1', 'fireball');
+  assert.equal(searched.length, 1);
+  assert.equal(searched[0].display_name, 'Thorgar the Wizard');
+
+  // Removing override restores original name
+  db.removeCustomDisplayName('guild-1', 'user-1');
+  utts = db.listUtterances(id);
+  assert.equal(utts[0].display_name, 'AliceDiscord');
+});
