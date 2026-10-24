@@ -81,6 +81,14 @@ export const api = {
   botAction: (action) => fetch(`/api/system/bot/${action}`, { method: 'POST' }).then(json),
   sidecarAction: (action) => fetch(`/api/system/sidecar/${action}`, { method: 'POST' }).then(json),
 
+  displayNames: {
+    list: (guildId) => fetch(`/api/guilds/${guildId}/display-names`).then(json).then((data) => data.displayNames || []),
+    set: (guildId, userId, displayName) => fetch(
+      `/api/guilds/${guildId}/display-names`,
+      jsonBody('POST', { userId, displayName })
+    ).then(json).then((data) => data.displayNames || []),
+  },
+
   // ── Auth ──────────────────────────────────────────────────────────────────
   me: () => fetch('/api/auth/me').then(json),
   login: (username, password) => fetch('/api/auth/login', jsonBody('POST', { username, password })).then(json),
@@ -92,23 +100,4 @@ export const api = {
   updateUser: (id, patch) => fetch(`/api/users/${id}`, jsonBody('PATCH', patch)).then(json),
   resetUserPassword: (id, password) => fetch(`/api/users/${id}/password`, jsonBody('POST', { password })).then(json),
   deleteUser: (id) => fetch(`/api/users/${id}`, { method: 'DELETE' }).then(json),
-};
-
-export const displayNames = {
-  list: async (guildId) => {
-    const res = await fetch(`${BASE}/guilds/${guildId}/display-names`);
-    if (!res.ok) throw new Error('Failed to fetch display names');
-    const data = await res.json();
-    return data.displayNames || [];
-  },
-  set: async (guildId, userId, displayName) => {
-    const res = await fetch(`${BASE}/guilds/${guildId}/display-names`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, displayName }),
-    });
-    if (!res.ok) throw new Error('Failed to set display name');
-    const data = await res.json();
-    return data.displayNames || [];
-  },
 };
