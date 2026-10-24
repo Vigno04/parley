@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS guilds (
   name TEXT,
   updated_at TEXT
 );
+CREATE TABLE IF NOT EXISTS user_display_names (
+  guild_id TEXT,
+  user_id TEXT,
+  display_name TEXT,
+  PRIMARY KEY (guild_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS todos (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   guild_id TEXT NOT NULL,
@@ -134,6 +140,10 @@ export function openDb(path) {
   if (!cols.some((c) => c.name === 'user_blacklist')) {
     sql.exec(`ALTER TABLE guild_config ADD COLUMN user_blacklist TEXT`);
   }
+  // Migration: add custom_display_names to guild_config for display name overrides
+  if (!cols.some((c) => c.name === 'custom_display_names')) {
+    sql.exec(`ALTER TABLE guild_config ADD COLUMN custom_display_names TEXT`);
+  }
   // Migration: add per-stage timing metrics to dbs created before this column
   // existed (Measurement section of the speed plan).
   const summaryCols = sql.prepare(`PRAGMA table_info(summaries)`).all();
@@ -144,6 +154,16 @@ export function openDb(path) {
   const providerCols = sql.prepare(`PRAGMA table_info(providers)`).all();
   if (!providerCols.some((c) => c.name === 'models')) {
     sql.exec(`ALTER TABLE providers ADD COLUMN models TEXT`);
+  }
+  // Migration: add user_display_names table for custom display name overrides
+  const userDisplayNameCols = sql.prepare(`PRAGMA table_info(user_display_names)`).all();
+  if (userDisplayNameCols.length === 0) {
+    sql.exec(`CREATE TABLE IF NOT EXISTS user_display_names (
+      guild_id TEXT,
+      user_id TEXT,
+      display_name TEXT,
+      PRIMARY KEY (guild_id, user_id)
+    )`);
   }
   // Migration: restore 'both' capabilities for providers if previously defaulted to summarizer
   try {
@@ -572,6 +592,37 @@ export function openDb(path) {
     },
     deleteProvider(id) {
       sql.prepare(`DELETE FROM providers WHERE id = ?`).run(id);
+    },
+
+    // ── Custom display name management ─────────────────────────────────────
+    // Set or update a custom display name for a user in a guild
+    setCustomDisplayName(guildId, userId, displayName) {
+      sql.prepare(
+        `INSERT OR REPLACE INTO user_display_names (guild_id, user_id, display_name)
+         VALUES (?, ?, ?)`
+      ).run(guildId, userId, displayName);
+    },
+
+    // Get custom display name for a user in a guild, returns null if not set
+    getCustomDisplayName(guildId, userId) {
+      const row = sql.prepare(`SELECT display_name FROM user_display_names WHERE guild_id = ? AND user_id = ?`).get(guildId, userId);
+      return row ? row.display_name : null;
+    },
+
+    // Get all custom display names for a guild
+    getGuildCustomDisplayNames(guildId) {
+      return sql.prepare(`SELECT user_id, display_name FROM user_display_names WHERE guild_id = ?`).all(guildId);
+    },
+
+    // Remove custom display name for a user in a guild
+    removeCustomDisplayName(guildId, userId) {
+      sql.prepare(`DELETE FROM user_display_names WHERE guild_id = ? AND user_id = ?`).run(guildId, userId);
+    },
+
+    // Get display name for a user, preferring custom name if set, otherwise Discord display name
+    getEffectiveDisplayName(guildId, userId, discordDisplayName) {
+      const customName = this.getCustomDisplayName(guildId, userId);
+      return customName || discordDisplayName || 'Unknown';
     },
   };
 }

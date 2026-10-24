@@ -1134,5 +1134,33 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null, env: 
     } catch (e) { res.status(502).json({ error: e.message }); }
   });
 
+  // Custom display name endpoints
+  r.get('/guilds/:g/display-names', (req, res) => {
+    const guildId = req.params.g;
+    try {
+      const names = db.getGuildCustomDisplayNames(guildId);
+      res.json({ ok: true, displayNames: names });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  r.post('/guilds/:g/display-names', async (req, res) => {
+    const guildId = req.params.g;
+    const { userId, displayName } = req.body || {};
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    try {
+      if (displayName) {
+        db.setCustomDisplayName(guildId, userId, displayName);
+      } else {
+        db.removeCustomDisplayName(guildId, userId);
+      }
+      const names = db.getGuildCustomDisplayNames(guildId);
+      res.json({ ok: true, displayNames: names });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   return r;
 }

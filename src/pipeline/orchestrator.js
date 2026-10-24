@@ -86,8 +86,13 @@ export async function processMeeting(db, meetingId, opts) {
     return { notes: null, talktime: [], empty: true };
   }
 
-  const transcript = buildTranscript(utterances);
-  const talktime = computeTalkTime(utterances);
+  // Apply custom display name overrides per guild before rendering
+  const effectiveUtterances = utterances.map(u => ({
+    ...u,
+    displayName: db.getEffectiveDisplayName(meeting.guild_id, u.userId, u.displayName),
+  }));
+  const transcript = buildTranscript(effectiveUtterances);
+  const talktime = computeTalkTime(effectiveUtterances);
   const attendees = db.listAttendees(meetingId).map((a) => a.display_name);
   const meta = {
     channelName: meeting.channel_name,

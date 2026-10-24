@@ -170,6 +170,109 @@ function PromptEditor({ value, defaultValue, onSave }) {
   );
 }
 
+function DisplayNameManager({ guildId, members }) {
+  const [displayNames, setDisplayNames] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null);
+  const [draftName, setDraftName] = useState('');
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const names = await api.displayNames.list(guildId);
+        setDisplayNames(names);
+      } catch (e) {
+        console.error('Failed to load display names:', e);
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [guildId]);
+
+  async function saveName(userId, displayName) {
+    try {
+      const updated = await api.displayNames.set(guildId, userId, displayName);
+      setDisplayNames(updated);
+      setEditing(null);
+    } catch (e) {
+      console.error('Failed to save display name:', e);
+    }
+  }
+
+  if (loading) return <div className="h-44 skeleton rounded-[14px]" />;
+
+  return (
+    <Card title="Display Name Overrides" desc="Customize how members appear in transcripts and summaries">
+      <div className="space-y-3">
+        {members.map((m) => {
+          const current = displayNames.find((d) => d.user_id === m.id);
+          const isEditing = editing === m.id;
+          return (
+            <div key={m.id} className="flex items-center gap-3">
+              <div className="flex-1">
+                <p className="text-sm font-medium text-ink">{m.displayName}</p>
+                {current ? (
+                  <p className="text-xs text-muted">Currently: {current.display_name}</p>
+                ) : (
+                  <p className="text-xs text-muted">No custom name set</p>
+                )}
+              </div>
+              {isEditing ? (
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={draftName}
+                    onChange={(e) => setDraftName(e.target.value)}
+                    placeholder="Enter custom name"
+                    className="input !py-1.5"
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary !py-1.5"
+                    onClick={() => saveName(m.id, draftName)}
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost !py-1.5"
+                    onClick={() => setEditing(null)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className="btn btn-ghost !py-1.5"
+                    onClick={() => {
+                      setEditing(m.id);
+                      setDraftName(current?.display_name || '');
+                    }}
+                  >
+                    {current ? 'Edit' : 'Set'}
+                  </button>
+                  {current && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost !py-1.5 text-error"
+                      onClick={() => saveName(m.id, null)}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
 export default function ServerSettings() {
   const { guildId, guilds } = useGuild();
   const [data, setData] = useState(null);

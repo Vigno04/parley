@@ -24,6 +24,8 @@ export const DEFAULTS = {
   // null = no special vocabulary/glossary prompt; when set, passed to STT/LLM STT
   sttPrompt: null,
   userBlacklist: [],
+  // Custom display name overrides: {userId: displayName}
+  customDisplayNames: {},
 };
 
 const COLS = {
@@ -45,6 +47,7 @@ const COLS = {
   summaryPrompt: 'summary_prompt',
   sttPrompt: 'stt_prompt',
   userBlacklist: 'user_blacklist',
+  customDisplayNames: 'custom_display_names',
 };
 
 function fromRow(row) {
@@ -67,6 +70,7 @@ function fromRow(row) {
     summaryPrompt: row.summary_prompt ?? DEFAULTS.summaryPrompt,
     sttPrompt: row.stt_prompt ?? DEFAULTS.sttPrompt,
     userBlacklist: parseBlacklist(row.user_blacklist),
+    customDisplayNames: row.custom_display_names ? JSON.parse(row.custom_display_names) : DEFAULTS.customDisplayNames,
   };
 }
 
@@ -85,10 +89,11 @@ export function setGuildConfig(db, guildId, patch) {
   }
   const merged = { ...current, ...safePatch, guildId };
   const userBlacklistJson = JSON.stringify(parseBlacklist(merged.userBlacklist));
+  const customDisplayNamesJson = JSON.stringify(merged.customDisplayNames || {});
   db.sql.prepare(
     `INSERT OR REPLACE INTO guild_config
-       (guild_id, summarizer_enabled, auto_transcribe, summarizer_provider, summarizer_model, summarizer_fallback_provider, summarizer_fallback_model, stt_provider, stt_model, whisper_model, notes_channel_id, use_thread, auto_join, language, summary_language, recording_retention, summary_prompt, stt_prompt, user_blacklist)
-     VALUES (@guildId, @summarizerEnabled, @autoTranscribe, @summarizerProvider, @summarizerModel, @summarizerFallbackProvider, @summarizerFallbackModel, @sttProvider, @sttModel, @whisperModel, @notesChannelId, @useThread, @autoJoin, @language, @summaryLanguage, @recordingRetention, @summaryPrompt, @sttPrompt, @userBlacklist)`
+       (guild_id, summarizer_enabled, auto_transcribe, summarizer_provider, summarizer_model, summarizer_fallback_provider, summarizer_fallback_model, stt_provider, stt_model, whisper_model, notes_channel_id, use_thread, auto_join, language, summary_language, recording_retention, summary_prompt, stt_prompt, user_blacklist, custom_display_names)
+     VALUES (@guildId, @summarizerEnabled, @autoTranscribe, @summarizerProvider, @summarizerModel, @summarizerFallbackProvider, @summarizerFallbackModel, @sttProvider, @sttModel, @whisperModel, @notesChannelId, @useThread, @autoJoin, @language, @summaryLanguage, @recordingRetention, @summaryPrompt, @sttPrompt, @userBlacklist, @customDisplayNames)`
   ).run({
     guildId,
     summarizerEnabled: merged.summarizerEnabled ? 1 : 0,
@@ -109,6 +114,7 @@ export function setGuildConfig(db, guildId, patch) {
     summaryPrompt: merged.summaryPrompt,
     sttPrompt: merged.sttPrompt,
     userBlacklist: userBlacklistJson,
+    customDisplayNames: customDisplayNamesJson,
   });
   return merged;
 }

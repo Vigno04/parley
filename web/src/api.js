@@ -93,3 +93,22 @@ export const api = {
   resetUserPassword: (id, password) => fetch(`/api/users/${id}/password`, jsonBody('POST', { password })).then(json),
   deleteUser: (id) => fetch(`/api/users/${id}`, { method: 'DELETE' }).then(json),
 };
+
+export const displayNames = {
+  list: async (guildId) => {
+    const res = await fetch(`${BASE}/guilds/${guildId}/display-names`);
+    if (!res.ok) throw new Error('Failed to fetch display names');
+    const data = await res.json();
+    return data.displayNames || [];
+  },
+  set: async (guildId, userId, displayName) => {
+    const res = await fetch(`${BASE}/guilds/${guildId}/display-names`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, displayName }),
+    });
+    if (!res.ok) throw new Error('Failed to set display name');
+    const data = await res.json();
+    return data.displayNames || [];
+  },
+};
