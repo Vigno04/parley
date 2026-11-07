@@ -28,6 +28,7 @@ export function createOpenAICompatibleSTT({ baseUrl, apiKey, label = 'STT' }, de
 
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
+        if (opts.signal?.aborted) throw Object.assign(new Error('Transcription aborted'), { name: 'AbortError' });
         const form = new FormData();
         form.append('file', new Blob([bytes]), basename(filePath));
         const model = opts.model || 'whisper-large-v3-turbo';

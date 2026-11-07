@@ -4,8 +4,26 @@ import { getSummarizer } from '../adapters/summarizer/index.js';
 import { describeSummarizerError } from '../adapters/summarizer/errors.js';
 import { resolveSummaryLanguage } from '../adapters/summarizer/languages.js';
 import { setMeetingProgress, clearMeetingProgress } from './progress.js';
+import { registerJob, getJob, removeJob } from './jobs.js';
 
 export async function processMeeting(db, meetingId, opts) {
+  // Register this pipeline as a cancellable job. The dashboard's cancel /
+  // delete / clear-generated endpoints call cancelJob(meetingId) which aborts
+  // this controller — the signal is threaded into transcribeTracks so an
+  // in-flight pipeline stops promptly instead of hammering a dead STT
+  // endpoint forever.
+  const job = registerJob(meetingId, { phase: 'transcribing' });
+  try {
+    return await processMeetingInner(db, meetingId, opts, job.controller.signal);
+  } finally {
+    // Only drop the registry entry if it's still ours — a concurrent pipeline
+    // for the same meeting (retry racing a stuck run) may have registered its
+    // own controller after this one finished.
+    if (getJob(meetingId) === job) removeJob(meetingId);
+  }
+}
+
+async function processMeetingInner(db, meetingId, opts, signal) {
   const meeting = db.getMeeting(meetingId);
   const totalTracks = Array.isArray(opts.tracks) ? opts.tracks.length : 1;
 
@@ -27,6 +45,7 @@ export async function processMeeting(db, meetingId, opts) {
   const transcribe = opts.transcribe || ((tracks, cfg) => transcribeTracks(tracks, cfg, {
     db,
     onProgress,
+    signal,
     ...(opts.transcribeDeps || {}),
   }));
   const isSummarizerEnabled = opts.cfg?.summarizerEnabled !== false;
@@ -56,6 +75,16 @@ export async function processMeeting(db, meetingId, opts) {
     throw err;
   }
   const transcribeMs = Date.now() - transcribeStart;
+
+  // If the pipeline was cancelled mid-transcription (user hit cancel / deleted
+  // the meeting), stop here — don't save partial results or run the summarizer.
+  if (signal.aborted) {
+    clearMeetingProgress(meetingId);
+    db.setMeetingStatus(meetingId, 'transcription_failed');
+    const err = new Error('Transcription cancelled by user');
+    err.userMessage = 'Transcription was cancelled.';
+    throw err;
+  }
 
   // A2: one or more tracks failing STT must not sink a meeting that
   // otherwise has usable transcript — only bail out when every track

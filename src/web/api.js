@@ -20,6 +20,7 @@ import { transcribeTracks } from '../pipeline/transcribe.js';
 import { parsePcmName, wavHeader, pcmDurationMs } from '../voice/audio.js';
 import { requireAdmin } from './auth.js';
 import { setMeetingProgress, getMeetingProgress, clearMeetingProgress } from '../pipeline/progress.js';
+import { cancelJob } from '../pipeline/jobs.js';
 
 function guildName(client, id, dbNames = {}) {
   return client?.guilds?.cache?.get(id)?.name || dbNames[id] || id;
@@ -125,6 +126,16 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null, env: 
     const id = Number(req.params.id);
     const progress = getMeetingProgress(id);
     res.json({ ok: true, active: !!progress, progress });
+  });
+
+  // Cancel an in-flight transcription/summarize pipeline. Aborts the job's
+  // AbortController so transcribeTracks stops hitting the STT endpoint and the
+  // orchestrator bails before saving partial results or running the summarizer.
+  r.post('/meetings/:id/cancel', (req, res) => {
+    const id = Number(req.params.id);
+    const cancelled = cancelJob(id);
+    if (cancelled) clearMeetingProgress(id);
+    res.json({ ok: true, cancelled });
   });
 
   r.get('/meetings/:id/export', async (req, res) => {
@@ -576,6 +587,11 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null, env: 
     const meeting = db.getMeeting(id);
     if (!meeting) return res.status(404).json({ error: 'meeting not found' });
 
+    // Stop any in-flight transcription/summarize pipeline before wiping its
+    // generated data, so the job doesn't keep hammering the STT endpoint
+    // against a meeting the user just cleared.
+    cancelJob(id);
+
     let pcmCount = 0;
     try {
       pcmCount = readdirSync(audioDir(id)).filter((f) => f.endsWith('.pcm')).length;
@@ -610,6 +626,9 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null, env: 
     const id = Number(req.params.id);
     const meeting = db.getMeeting(id);
     if (!meeting) return res.status(404).json({ error: 'meeting not found' });
+    // Abort any in-flight pipeline so it stops hitting the STT endpoint
+    // against a meeting that's about to be deleted.
+    cancelJob(id);
     db.deleteMeeting(id);
     await rm(audioDir(id), { recursive: true, force: true }).catch(() => {});
     res.json({ ok: true });
@@ -991,9 +1010,21 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null, env: 
       api_key: keyToUse,
     };
     const result = await listModels(dummy, { timeoutMs: 8000, refresh: true });
+    let savedModels = [];
+    try {
+      const parsed = JSON.parse(existing?.models || '[]');
+      savedModels = Array.isArray(parsed) ? parsed : [];
+    } catch { /* legacy comma-separated model list */ }
+    const savedById = new Map(savedModels.map((model) => {
+      const modelId = typeof model === 'string' ? model : model?.id || model?.name;
+      return [modelId, typeof model === 'object' && Array.isArray(model.caps) ? model.caps : null];
+    }).filter(([modelId]) => modelId));
     res.json({
       ok: result.source === 'live',
+      // Keep models as IDs for API compatibility. modelCaps carries saved
+      // choices separately so refreshing the catalog cannot reset them.
       models: result.models.map((m) => m.id),
+      modelCaps: Object.fromEntries([...savedById].filter(([, caps]) => Array.isArray(caps))),
       error: result.error,
     });
   });

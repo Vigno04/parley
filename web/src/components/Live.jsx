@@ -86,6 +86,29 @@ function RecordingCard({ session }) {
   );
 }
 
+function CancelJobButton({ meetingId }) {
+  const { cancel } = useLive();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  async function run() {
+    if (!window.confirm('Cancel this transcription? The pipeline will stop immediately; audio on disk is kept so you can retry later.')) return;
+    setBusy(true); setErr(null);
+    try { await cancel(meetingId); }
+    catch (e) { setErr(e?.message || 'Failed to cancel.'); setBusy(false); }
+  }
+  return (
+    <div className="flex items-center gap-2">
+      {err && <span className="text-xs text-error">{err}</span>}
+      <button onClick={run} disabled={busy}
+        className="btn btn-ghost !py-1.5 !text-error">
+        {busy
+          ? <span className="inline-flex items-center gap-2"><span className="h-3.5 w-3.5 rounded-full border-2 border-current border-t-transparent animate-spin" />Cancelling…</span>
+          : <span className="inline-flex items-center gap-1.5"><Icon.Stop width={14} height={14} />Cancel</span>}
+      </button>
+    </div>
+  );
+}
+
 function ProcessingCard({ session }) {
   // Recording is over — show the frozen recording duration, not a ticking timer.
   const elapsed = Math.max(0, parseTs(session.stoppedAt) - parseTs(session.startedAt));
@@ -106,9 +129,12 @@ function ProcessingCard({ session }) {
         </div>
         <div className="flex flex-col items-end gap-3">
           <AvatarStack names={names} size={26} max={6} />
-          <Link to={`/meetings/${session.meetingId}`} className="btn btn-ghost !py-1.5">
-            View meeting <Icon.Arrow width={14} height={14} />
-          </Link>
+          <div className="flex items-center gap-2">
+            <CancelJobButton meetingId={session.meetingId} />
+            <Link to={`/meetings/${session.meetingId}`} className="btn btn-ghost !py-1.5">
+              View meeting <Icon.Arrow width={14} height={14} />
+            </Link>
+          </div>
         </div>
       </div>
     </div>

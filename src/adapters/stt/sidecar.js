@@ -6,7 +6,7 @@ import { normalize } from './openai-compatible.js';
 // `(filePath, { model, language }) => { text, words }`.
 export function createSidecarSTT({ baseUrl }, deps = {}) {
   return async function transcribe(filePath, opts = {}) {
-    const raw = await transcribeFile(filePath, { model: opts.model, language: opts.language }, { ...deps, baseUrl });
+    const raw = await transcribeFile(filePath, { model: opts.model, language: opts.language, signal: opts.signal }, { ...deps, baseUrl });
     return normalize(raw);
   };
 }

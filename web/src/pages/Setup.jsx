@@ -143,14 +143,16 @@ function ProviderForm({ initial = null, onSave, onCancel, isNew = false }) {
       if (res.ok && res.models?.length) {
         setModelList((prev) => {
           const map = new Map(prev.map((m) => [m.id, m]));
-          for (const mId of res.models) {
+          for (const model of res.models) {
+            const mId = typeof model === 'string' ? model : model?.id;
+            if (!mId) continue;
             if (!map.has(mId)) {
               const idLower = mId.toLowerCase();
               const isWhisper = idLower.includes('whisper') || idLower.includes('voxtral');
               const isLlm = idLower.includes('gemma') || idLower.includes('gemini') || idLower.includes('llama') || idLower.includes('chat') || idLower.includes('instruct');
               map.set(mId, {
                 id: mId,
-                caps: isWhisper ? ['stt'] : isLlm ? ['llm_stt', 'summarizer'] : ['summarizer'],
+                caps: Array.isArray(res.modelCaps?.[mId]) ? res.modelCaps[mId] : (isWhisper ? ['stt'] : isLlm ? ['llm_stt', 'summarizer'] : ['summarizer']),
               });
             }
           }

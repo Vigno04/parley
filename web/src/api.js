@@ -39,6 +39,7 @@ export const api = {
   stats: (g) => fetch(`/api/guilds/${g}/stats`).then(json),
   meeting: (id) => fetch(`/api/meetings/${id}`).then(json),
   meetingProgress: (id) => fetch(`/api/meetings/${id}/progress`).then(json),
+  cancelMeeting: (id) => fetch(`/api/meetings/${id}/cancel`, { method: 'POST' }).then(json),
   exportMeetingUrl: (id, format = 'md') => `/api/meetings/${id}/export?format=${format}`,
   todos: (g, { open, assignee } = {}) => {
     const p = new URLSearchParams();

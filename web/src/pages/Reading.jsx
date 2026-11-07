@@ -26,7 +26,7 @@ function fmtSeconds(sec = 0) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-function ProcessingBanner({ meeting, pcmCount = 0, initialProgress = null }) {
+function ProcessingBanner({ meeting, pcmCount = 0, initialProgress = null, onReload = null }) {
   const [progress, setProgress] = useState(initialProgress);
   const [secondsElapsed, setSecondsElapsed] = useState(0);
 
@@ -116,8 +116,37 @@ function ProcessingBanner({ meeting, pcmCount = 0, initialProgress = null }) {
           <Icon.Clock width={13} height={13} className="text-primary/80" />
           ETA: <strong className="text-ink font-semibold">{etaText}</strong>
         </span>
-        <span className="text-[11px]">Updates automatically when complete</span>
+        <div className="flex items-center gap-3">
+          <span className="text-[11px]">Updates automatically when complete</span>
+          <CancelPipelineButton meetingId={meeting?.id} onCancelled={() => { setProgress(null); onReload?.(); }} />
+        </div>
       </div>
+    </div>
+  );
+}
+
+function CancelPipelineButton({ meetingId, onCancelled }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  if (!meetingId) return null;
+  async function run() {
+    if (!window.confirm('Cancel this transcription? The pipeline will stop immediately; audio on disk is kept so you can retry later.')) return;
+    setBusy(true); setErr(null);
+    try {
+      await api.cancelMeeting(meetingId);
+      onCancelled?.();
+    } catch (e) {
+      setErr(e?.message || 'Failed to cancel.');
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="flex items-center gap-2">
+      {err && <span className="text-[11px] text-error">{err}</span>}
+      <button onClick={run} disabled={busy}
+        className="btn btn-ghost !py-1 !px-2 !text-error !text-[11px] uppercase tracking-wide">
+        {busy ? 'Cancelling…' : 'Cancel'}
+      </button>
     </div>
   );
 }
@@ -374,6 +403,16 @@ function RetranscribeModal({ meeting, sttProviders = [], onClose, onDone }) {
     }
   }
 
+  async function handleCancel() {
+    if (busy) {
+      try {
+        await api.cancelMeeting(meeting.id);
+      } catch { /* ignore */ }
+    }
+    setBusy(false);
+    onClose?.();
+  }
+
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
       <div ref={ref} className="card p-6 w-full max-w-md shadow-2xl space-y-4">
@@ -388,8 +427,7 @@ function RetranscribeModal({ meeting, sttProviders = [], onClose, onDone }) {
             </p>
           </div>
           <button
-            onClick={onClose}
-            disabled={busy}
+            onClick={handleCancel}
             className="text-muted hover:text-ink text-lg leading-none p-1"
             aria-label="Close"
           >
@@ -480,11 +518,10 @@ function RetranscribeModal({ meeting, sttProviders = [], onClose, onDone }) {
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
             <button
               type="button"
-              onClick={onClose}
-              disabled={busy}
+              onClick={handleCancel}
               className="btn btn-ghost !py-1.5"
             >
-              Cancel
+              {busy ? 'Interrupt & Cancel' : 'Cancel'}
             </button>
             <button
               type="submit"
@@ -701,6 +738,7 @@ function Note({ data, todos, guildId, meetings, refetchTodos, onReload }) {
           meeting={meeting}
           pcmCount={data?.pcmCount || 0}
           initialProgress={data?.progress || null}
+          onReload={onReload}
         />
       )}
 

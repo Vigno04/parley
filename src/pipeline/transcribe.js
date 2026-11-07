@@ -47,6 +47,12 @@ export async function transcribeTracks(rawTracks, cfg = {}, deps = {}) {
   const results = new Array(tracks.length);
   const failures = [];
   let completedTracks = 0;
+  let consecutiveFailures = 0;
+  // Circuit breaker: after this many consecutive track failures we stop
+  // retrying the rest. A dead STT endpoint fails every track, so without
+  // this the worker pool keeps hitting it forever (one fetch per track, but
+  // the loop never breaks) — the user can't interrupt it via cancel/delete.
+  const maxConsecutiveFailures = Math.max(1, deps.maxConsecutiveFailures ?? 3);
   const startTime = Date.now();
 
   deps.onProgress?.({
@@ -60,6 +66,10 @@ export async function transcribeTracks(rawTracks, cfg = {}, deps = {}) {
   async function worker(start) {
     for (let i = start; i < tracks.length; i += concurrency) {
       if (deps.signal?.aborted) return;
+      // Circuit breaker tripped: the endpoint is consistently failing, so
+      // don't burn more requests on a dead backend. The caller (orchestrator)
+      // sees the failures array and decides whether the meeting is recoverable.
+      if (consecutiveFailures >= maxConsecutiveFailures) return;
       const t = tracks[i];
       const wavPath = t.pcmPath.replace(/\.pcm$/, '.wav');
       try {
@@ -72,7 +82,9 @@ export async function transcribeTracks(rawTracks, cfg = {}, deps = {}) {
           signal: deps.signal,
           ...cfg,
         });
+        // Successful (or silent/hallucinated) track resets the breaker.
         const clean = dedup((text || '').trim());
+        consecutiveFailures = 0; // silent/hallucinated track still reached STT — reset the breaker
         if (!clean || isHallucination(clean)) continue; // silent or hallucinated track
         let lastEnd = words && words.length
           ? words[words.length - 1].end
@@ -91,6 +103,7 @@ export async function transcribeTracks(rawTracks, cfg = {}, deps = {}) {
           text: clean,
         };
       } catch (err) {
+        consecutiveFailures++;
         failures.push({ userId: t.userId, displayName: t.displayName, error: err.message || String(err) });
       } finally {
         completedTracks++;

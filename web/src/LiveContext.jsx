@@ -66,8 +66,16 @@ export function LiveProvider({ children }) {
     await refresh();
   }, [guildId, refresh]);
 
+  // Cancel an in-flight transcription/summarize pipeline for a meeting that's
+  // already been recorded (phase 'processing'). Unlike stop(), this doesn't
+  // touch the voice connection — it just tells the server to abort the job.
+  const cancel = useCallback(async (meetingId) => {
+    await api.cancelMeeting(meetingId);
+    await refresh();
+  }, [guildId, refresh]);
+
   return (
-    <Ctx.Provider value={{ live, error, refresh, stop }}>
+    <Ctx.Provider value={{ live, error, refresh, stop, cancel }}>
       {children}
     </Ctx.Provider>
   );

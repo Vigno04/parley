@@ -17,12 +17,18 @@ export async function transcribeFile(filePath, opts = {}, deps = {}) {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
+      if (opts.signal?.aborted) throw Object.assign(new Error('Transcription aborted'), { name: 'AbortError' });
       const form = new FormData();
       form.append('file', new Blob([bytes]), basename(filePath));
       form.append('model', opts.model || 'small');
       form.append('language', opts.language || 'auto');
+
+      const signals = [AbortSignal.timeout(timeoutMs)];
+      if (opts.signal) signals.push(opts.signal);
+      const reqSignal = AbortSignal.any ? AbortSignal.any(signals) : (opts.signal || signals[0]);
+
       const res = await fetchImpl(`${baseUrl}/transcribe`, {
-        method: 'POST', body: form, signal: AbortSignal.timeout(timeoutMs),
+        method: 'POST', body: form, signal: reqSignal,
       });
       if (!res.ok) {
         // 4xx is a client error (bad request/model/payload) — retrying re-uploads
@@ -35,7 +41,7 @@ export async function transcribeFile(filePath, opts = {}, deps = {}) {
       return await res.json();
     } catch (err) {
       lastErr = err;
-      if (err?.noRetry) break; // don't burn retries on a permanent client error
+      if (opts.signal?.aborted || err?.name === 'AbortError' || err?.noRetry) break; // don't burn retries on abort or permanent error
       // Back off before retrying a transient failure (stalled/booting sidecar).
       if (attempt < retries && backoffMs > 0) {
         await new Promise((r) => setTimeout(r, backoffMs * (attempt + 1)));

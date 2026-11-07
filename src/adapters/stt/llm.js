@@ -106,17 +106,22 @@ export function createLlmSTT({ baseUrl, apiKey, label = 'LLM STT' }, deps = {}) 
     let lastErr;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
+        if (opts.signal?.aborted) throw Object.assign(new Error('Transcription aborted'), { name: 'AbortError' });
         const headers = {
           'Content-Type': 'application/json',
         };
         if (apiKey) {
           headers.Authorization = `Bearer ${apiKey}`;
         }
+        const signals = [AbortSignal.timeout(timeoutMs)];
+        if (opts.signal) signals.push(opts.signal);
+        const reqSignal = AbortSignal.any ? AbortSignal.any(signals) : (opts.signal || signals[0]);
+
         const res = await fetchImpl(url, {
           method: 'POST',
           headers,
           body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: reqSignal,
         });
         if (!res.ok) {
           const body = await res.text().catch(() => '');
@@ -134,6 +139,7 @@ export function createLlmSTT({ baseUrl, apiKey, label = 'LLM STT' }, deps = {}) 
         return { text, words: [], duration: undefined };
       } catch (err) {
         lastErr = err;
+        if (opts.signal?.aborted || err?.name === 'AbortError') break;
       }
     }
     throw lastErr;
